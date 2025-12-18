@@ -1,0 +1,42 @@
+# --- Python & System ---
+__pycache__/
+*.py[cod]
+*.so
+.DS_Store
+
+# --- IDE & Editors ---
+.idea/
+.vscode/
+*.swp
+
+# --- Datasets & Media (Data) ---
+train_data/
+test_data/
+*.csv
+*.jpg
+*.png
+*.mp4
+*.gif
+*.pdf
+
+# --- Logs & Outputs ---
+*.out
+*.log
+output_dir/
+results/
+.experiments/
+downstream_tasks/
+
+# --- Scripts (注意：通常建议保留脚本版本控制，除非包含敏感信息) ---
+*.sh
+
+# --- Deep Learning Checkpoints (防止上传大文件) ---
+*.pth
+*.pt
+*.ckpt
+*.pkl
+
+# --- Environments ---
+.venv/
+env/
+venv/

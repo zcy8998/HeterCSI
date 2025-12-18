@@ -1,0 +1,333 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+
+
+# import util.logging as logging
+import pdb
+
+import torch
+import torch.nn as nn
+from util.embed import FourierEmbedding
+from util.pos_embed import get_1d_sincos_pos_embed_from_grid
+from timm_utils.models.layers import to_2tuple
+from timm_utils.models.vision_transformer import DropPath, Mlp
+from einops import rearrange
+
+
+# logger = logging.get_logger(__name__)
+
+
+class PatchEmbed(nn.Module):
+    """Image to Patch Embedding"""
+
+    def __init__(
+        self,
+        img_size=(48,64),
+        patch_size=16,
+        in_chans=3,
+        embed_dim=768,
+        # temporal related:
+        frames=16,
+        t_patch_size=4,
+    ):
+        super().__init__()
+        img_size = to_2tuple(img_size)
+        patch_size = to_2tuple(patch_size)
+        assert img_size[1] % patch_size[1] == 0
+        assert img_size[0] % patch_size[0] == 0
+        assert frames % t_patch_size == 0
+        num_patches = (
+            (img_size[1] // patch_size[1])
+            * (img_size[0] // patch_size[0])
+            * (frames // t_patch_size)
+        )
+        self.input_size = (
+            frames // t_patch_size,
+            img_size[0] // patch_size[0],
+            img_size[1] // patch_size[1],
+        )
+        print(
+            f"img_size {img_size} patch_size {patch_size} frames {frames} t_patch_size {t_patch_size}"
+        )
+        self.img_size = img_size
+        self.patch_size = patch_size
+
+        self.frames = frames
+        self.t_patch_size = t_patch_size
+
+        self.num_patches = num_patches
+
+        self.grid_size = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
+        self.t_grid_size = frames // t_patch_size
+
+        kernel_size = [t_patch_size] + list(patch_size)
+        # print(kernel_size)
+        self.proj = nn.Conv3d(
+            in_chans, embed_dim, kernel_size=kernel_size, stride=kernel_size
+        )
+
+    def forward(self, x):
+        B, C, T, H, W = x.shape 
+        assert (
+            H == self.img_size[0] and W == self.img_size[1]
+        ), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        # pdb.set_trace()
+        assert T == self.frames
+        x = self.proj(x).flatten(3)
+        x = torch.einsum("ncts->ntsc", x)  # [N, T, H*W, C]
+        return x
+
+
+class PatchEmbed_v2(nn.Module):
+    def __init__(
+        self,
+        input_dim=128,
+        output_dim=768,
+        num_patches=1536,
+    ):
+        super().__init__()
+        self.proj= nn.Linear(
+            in_features=input_dim,  # 输入特征维度
+            out_features=output_dim, # 输出特征维度
+            bias=True  # 包含偏置项（可选）
+        )
+        self.num_patches=num_patches
+    def forward(self, x):
+        return self.proj(x) 
+    
+
+class Attention(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_heads=8,
+        qkv_bias=False,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        input_size=(4, 14, 14),
+        pe_config=None,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        assert attn_drop == 0.0  # do not use
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.input_size = input_size
+        assert input_size[1] == input_size[2]
+
+        if pe_config is None:
+            print("No Fourier Position Embedding config provided.")
+        else:
+            self.pos_emb = FourierEmbedding(pe_config)
+
+    def forward(self, x, attn_mask=None):
+        B, N, C = x.shape
+        q = (
+            self.q(x)
+            .reshape(B, N, self.num_heads, C // self.num_heads)
+            .permute(0, 2, 1, 3)
+        )
+        k = (
+            self.k(x)
+            .reshape(B, N, self.num_heads, C // self.num_heads)
+            .permute(0, 2, 1, 3)
+        )
+        v = (
+            self.v(x)
+            .reshape(B, N, self.num_heads, C // self.num_heads)
+            .permute(0, 2, 1, 3)
+        )
+
+        query_len, key_len = q.shape[-2], k.shape[-2]
+        all_len = max(query_len, key_len)
+
+        if self.pos_emb:
+            q = self.pos_emb(q, all_len)
+            k = self.pos_emb(k, all_len)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+
+        if attn_mask is not None:
+            # attn_mask: [B, N] bool, True=keep, False=pad
+            # 扩到 [B,1,1,N]，True 表示要 mask 的位置
+            key_mask = ~attn_mask.unsqueeze(1).unsqueeze(2)
+            # query_mask = ~attn_mask.unsqueeze(1).unsqueeze(3) # [B,1,N,1]
+            attn = attn.masked_fill(key_mask, float('-inf'))
+
+        attn = attn.softmax(dim=-1)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        x = x.view(B, -1, C)
+        return x
+
+class Linear_Attention(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_heads=8,
+        qkv_bias=False,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        input_size=(4, 14, 14),
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        assert attn_drop == 0.0  # do not use
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.input_size = input_size
+        assert input_size[1] == input_size[2]
+
+    def forward(self, x):
+        B, N, C = x.shape
+        q = (
+            self.q(x)
+            .reshape(B, N, self.num_heads, C // self.num_heads)
+            .permute(0, 2, 1, 3)
+        )
+        k = (
+            self.k(x)
+            .reshape(B, N, self.num_heads, C // self.num_heads)
+            .permute(0, 2, 1, 3)
+        )
+        v = (
+            self.v(x)
+            .reshape(B, N, self.num_heads, C // self.num_heads)
+            .permute(0, 2, 1, 3)
+        )
+
+        # attn = (q @ k.transpose(-2, -1)) * self.scale
+
+        attn = ((k.transpose(-2, -1) * self.scale).softmax(dim=-1)) @ v
+
+        # attn = attn.softmax(dim=-1)
+
+        # x = ((q.softmax(dim=-1)) @ attn).transpose(1, 2).reshape(B, N, C)
+        x = ((q.softmax(dim=-1)) @ attn).reshape(B, N, C)
+        # x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        x = x.view(B, -1, C)
+        return x
+        
+
+class CSI_Block(nn.Module):
+    """
+    Transformer Block with specified Attention function
+    """
+
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        drop=0.0,
+        attn_drop=0.0,
+        drop_path=0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        attn_func=Attention,
+        pe_config=None,
+    ):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = attn_func(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+            pe_config=pe_config,  # Fourier Position Embedding config
+        )
+        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=mlp_hidden_dim,
+            act_layer=act_layer,
+            drop=drop,
+        )
+
+    def forward(self, x, attn_mask=None):
+        x = x + self.drop_path(self.attn(self.norm1(x), attn_mask=attn_mask))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+    
+
+class Linear_Block(nn.Module):
+    """
+    Transformer Block with specified Attention function
+    """
+
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        drop=0.0,
+        attn_drop=0.0,
+        drop_path=0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        attn_func=Linear_Attention,
+    ):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = attn_func(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+        )
+        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=mlp_hidden_dim,
+            act_layer=act_layer,
+            drop=drop,
+        )
+
+    def forward(self, x):
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+if __name__ == '__main__':
+    # input = torch.rand(2,9,512,512)
+    # input = torch.unsqueeze(input,dim=1)   #torch.Size([2, 1, 10, 512, 512]) B,T,C,H,W
+    # patch_embed = PatchEmbed(img_size=512,in_chans=1,frames=9,t_patch_size=3)
+    # output = patch_embed(input)
+    x = torch.rand(2,196,768)
+    model = Attention()
+    output = model(x)
+    # print()
+
