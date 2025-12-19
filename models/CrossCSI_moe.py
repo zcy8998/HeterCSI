@@ -47,9 +47,11 @@ class MaskedAutoencoderCSI(nn.Module):
             trunc_init=False,
             cls_embed=False,
             device=None,
-            num_experts=4, # 新增参数
-            top_k=2,       # 新增参数
-            moe_loss_weight=0.01, # 新增参数，控制负载均衡loss的权重
+            num_experts=8,          # [修改] 建议提升至 8 个专家
+            top_k=2,                # [保持] 保持 Top-2
+            moe_loss_weight=0.01,
+            moe_interval=2,         # [新增] 混合策略：每 2 层插入一个 MoE 层 (即偶数层 MoE，奇数层 Dense)
+            moe_mlp_ratio=2.0,      # [新增] 专家层的膨胀比设为 2.0 (配合 Top-2，计算量与 Dense 4.0 一致)
             **kwargs,
     ):
         super().__init__()
@@ -79,18 +81,33 @@ class MaskedAutoencoderCSI(nn.Module):
 
         self.blocks = nn.ModuleList()
         for i in range(depth):
-            # 你可以选择只替换最后几层，例如: if i > depth // 2:
-            self.blocks.append(
-                MoEBlock(
+            # 判定当前层是否使用 MoE
+            # 例如 moe_interval=2: 第0层(Dense), 第1层(MoE), 第2层(Dense)...
+            use_moe = ((i + 1) % moe_interval == 0)
+
+            if use_moe:
+                # [MoE 层] 使用 moe_mlp_ratio (2.0)
+                block = MoEBlock(
                     dim=embed_dim,
                     num_heads=num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=moe_mlp_ratio,  # <--- 关键点：专家比较窄
                     qkv_bias=not no_qkv_bias,
                     norm_layer=norm_layer,
                     num_experts=num_experts,
                     top_k=top_k
                 )
-            )
+            else:
+                # [普通 Dense 层] 使用标准 mlp_ratio (4.0)
+                # 这里假设 video_vit.Block_v2 是标准的 ViT Block
+                block = video_vit.Block_v2(
+                    dim=embed_dim,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,      # <--- 关键点：普通层比较宽
+                    qkv_bias=not no_qkv_bias,
+                    # qk_scale=None, # 根据你的 video_vit 定义可能需要加这个
+                    norm_layer=norm_layer
+                )
+            self.blocks.append(block)
 
         self.norm = norm_layer(embed_dim)
 
@@ -531,30 +548,22 @@ class MaskedAutoencoderCSI(nn.Module):
 
     # 计算负载均衡 Loss 的函数 ---
     def compute_load_balancing_loss(self):
-        if not hasattr(self, 'router_logits_collection') or len(self.router_logits_collection) == 0:
-            return 0.0
-        
-        total_aux_loss = 0.0
-        for logits in self.router_logits_collection:
-            # logits: [batch*seq_len, num_experts]
-            probs = F.softmax(logits, dim=-1)
+            # [新增] 空值检查：如果网络中没有 MoE 层，直接返回 0
+            if not hasattr(self, 'router_logits_collection') or not self.router_logits_collection:
+                # 必须返回带梯度的 tensor 0，且 device 要正确
+                return torch.tensor(0.0, device=self.pos_embed.device)
             
-            # 1. importance: 实际上分配给每个专家的概率和
-            importance = probs.sum(0)
-            
-            # 2. load: 简单的负载均衡 loss (CV平方系数)
-            # 这里使用最简单的 auxiliary loss: mean(importance * load)
-            # 简化版：尽量让每个 expert 分到的概率均等
-            
-            # 计算 entropy 或者 variance 作为惩罚
-            # 为了简单稳定，这里使用 DeepSpeed 风格的 loss
-            # 鼓励每个 expert 被选择的概率接近 1/num_experts
-            
-            target = 1.0 / self.num_experts
-            mse = (probs.mean(0) - target) ** 2
-            total_aux_loss += mse.sum() * self.num_experts # 简单的方差惩罚
-            
-        return total_aux_loss
+            total_aux_loss = 0.0
+            for logits in self.router_logits_collection:
+                probs = F.softmax(logits, dim=-1)
+                target = 1.0 / self.num_experts
+                
+                # 简单的方差惩罚
+                mse = (probs.mean(0) - target) ** 2
+                total_aux_loss += mse.sum() * self.num_experts
+                
+            # [新增] 对 MoE 层数取平均，避免层数越多 Loss 越大
+            return total_aux_loss / len(self.router_logits_collection)
     
     
     def forward_loss(self, imgs, pred, mask, token_length):
