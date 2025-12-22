@@ -26,6 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 # from torchao.quantization.linear_activation_quantized_tensor import \
 #     LinearActivationQuantizedTensor
 
+import models.CrossCSI_moe as CrossCSI_MOE
 import models.CSIGPT as CSIGPT
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
@@ -46,6 +47,7 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--model', default='mae_vit_large_patch16_128', type=str, metavar='MODEL',
                         help='Name of model to train')
+    parser.add_argument('--model_type', default='normal', type=str, help='model type used')
     parser.add_argument('--input_size', default=96, type=int,
                         help='images input size')
     parser.add_argument('--patch_size', default=8, type=int,
@@ -142,7 +144,14 @@ def main(args):
     if global_rank == 0:
         dataset_val_all = data_load_main(args, dataset_type='test', test_type='normal') # 加载数据
 
-    model = CSIGPT.__dict__[args.model](
+    model = None
+    if args.model_type == 'normal':
+        model = CSIGPT.__dict__[args.model](
+            cls_embed=args.cls_token,
+            device=device
+        )
+    elif args.model_type == 'moe':    
+        model = CrossCSI_MOE.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
     )

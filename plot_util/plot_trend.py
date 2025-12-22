@@ -23,30 +23,36 @@ plt.rcParams.update({
 # --------------------------
 # 2. 数据准备 (已根据表格更新)
 # --------------------------
-dataset_sizes = [8, 16, 24, 32]
+# 对应表格中的 8dataset, 16dataset, 24dataset, 32dataset, 40dataset
+dataset_sizes = [8, 16, 24, 32, 40]
+
+# 映射关系:
+# 表格 'all'             -> 代码 'Global'
+# 表格 'group(proposed)' -> 代码 'Proposed'
+# 表格 'seq_new'         -> 代码 'Alternating'
 
 # 任务1: Random-0.85
-# 对应表格行: random-0.85
+# 数据来源: 对应各表格 random-0.85 行
 data_random = {
-    'Global':      [0.305, 0.136, 0.079, 0.316],
-    'Proposed':    [0.259, 0.141, 0.058, 0.039],
-    'Alternating': [0.273, 0.195, 0.072, 0.074]
+    'Global':      [0.505, 0.378, 0.317, 0.414, 0.141],
+    'Proposed':    [0.438, 0.341, 0.299, 0.252, 0.106],
+    'Alternating': [0.445, 0.321, 0.264, 0.266, 0.172]
 }
 
 # 任务2: Temporal-0.5
-# 对应表格行: temporal-0.5
+# 数据来源: 对应各表格 temporal-0.5 行
 data_temporal = {
-    'Global':      [0.375, 0.282, 0.274, 0.2],
-    'Proposed':    [0.388, 0.278, 0.246, 0.197],
-    'Alternating': [0.377, 0.265, 0.257, 0.208]
+    'Global':      [0.6,   0.493, 0.51,  0.463, 0.315],
+    'Proposed':    [0.596, 0.442, 0.456, 0.429, 0.284],
+    'Alternating': [0.609, 0.484, 0.494, 0.469, 0.323]
 }
 
 # 任务3: Freq-0.5
-# 对应表格行: freq-0.5
+# 数据来源: 对应各表格 freq-0.5 行
 data_freq = {
-    'Global':      [0.286, 0.162, 0.136, 0.093],
-    'Proposed':    [0.258, 0.135, 0.126, 0.095],
-    'Alternating': [0.273, 0.176, 0.135, 0.1]
+    'Global':      [0.462, 0.355, 0.353, 0.358, 0.168],
+    'Proposed':    [0.435, 0.341, 0.334, 0.339, 0.13],
+    'Alternating': [0.444, 0.34,  0.349, 0.35,  0.15]
 }
 
 # 整合任务列表
@@ -77,14 +83,14 @@ for ax, (task_name, task_data) in zip(axes, all_tasks):
                 linestyle=style['linestyle'], 
                 color=style['color'], 
                 label=style['label'],
-                linewidth=2,         # 线宽参考值为2
-                markersize=8)        # 标记大小参考值为8
+                linewidth=2,         # 线宽
+                markersize=8)        # 标记大小
     
     # 样式修饰
-    # ax.set_title(task_name)           # 不显示标题
-    ax.set_xlabel('Number of Datasets') # 修改横轴标签
+    # ax.set_title(task_name)           # 标题(可选)
+    ax.set_xlabel('Number of Datasets') # 横轴标签
     ax.set_ylabel('NMSE')
-    ax.set_xticks(dataset_sizes)        # 强制显示离散的横轴刻度
+    ax.set_xticks(dataset_sizes)        # 强制显示离散的横轴刻度 (8, 16, 24, 32, 40)
     ax.tick_params(axis='both', which='major') 
     ax.grid(True, linestyle='--', alpha=0.5)
     
@@ -96,7 +102,7 @@ plt.tight_layout()
 # --------------------------
 # 4. 保存图片
 # --------------------------
-plt.savefig('generalization_nmse_result.png', dpi=300, bbox_inches='tight')
-plt.savefig('generalization_nmse_result.pdf', format='pdf', bbox_inches='tight')
+plt.savefig('results/generalization_nmse_result.png', dpi=300, bbox_inches='tight')
+plt.savefig('results/generalization_nmse_result.pdf', format='pdf', bbox_inches='tight')
 
 plt.show()

@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import uuid
 
 pdb.set_trace = lambda *args, **kwargs: None
 
@@ -44,6 +45,7 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--model', default='mae_vit_large_patch16_128', type=str, metavar='MODEL',
                         help='Name of model to train')
+    parser.add_argument('--model_type', default='normal', type=str, help='model type used')
     parser.add_argument('--input_size', default=96, type=int,
                         help='images input size')
     parser.add_argument('--patch_size', default=8, type=int,
@@ -135,7 +137,7 @@ def main(args):
 
     cudnn.benchmark = True
 
-    mmap_name = args.mask_type + args.shuffle_type
+    mmap_name = f"{args.mask_type}_{args.shuffle_type}_{len(args.dataset)}_{args.bucket_num}"
     if args.distributed:
         if args.shuffle_type == 'global':
             dataset_train = CSIDataset_mmap_nopad(dataset=args.dataset, world_size=misc.get_world_size(),
@@ -225,11 +227,18 @@ def main(args):
     if global_rank == 0:
         dataset_val_all = data_load_main(args, dataset_type='val', test_type='normal') # 加载数据
 
-    model = CSIGPT.__dict__[args.model](
+    model = None
+    if args.model_type == 'normal':
+        model = CSIGPT.__dict__[args.model](
+            cls_embed=args.cls_token,
+            device=device
+        )
+    elif args.model_type == 'moe':    
+        model = CrossCSI_MOE.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
-    )
-    
+    )   
+ 
     model.to(device)
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
@@ -374,6 +383,12 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    if 'train_dataset' in locals():
+        dataset_train.cleanup()
+    
+    # 销毁分布式组
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 if __name__ == '__main__':
     args = get_args_parser()

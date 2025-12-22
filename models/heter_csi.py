@@ -18,9 +18,8 @@ from functools import partial
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 from util import video_vit
-from util.comm_util import delay_doppler_phy_loss
-from util.data import patch_recover
 from util.logging import master_print as print
 from util.pos_embed import get_1d_sincos_pos_embed_from_grid
 
@@ -30,7 +29,7 @@ class MaskedAutoencoderCSI(nn.Module):
 
     def __init__(
             self,
-            max_length=1024,
+            max_length=2048,
             embed_dim=1024,
             depth=8,
             num_heads=16,
@@ -44,17 +43,15 @@ class MaskedAutoencoderCSI(nn.Module):
             no_qkv_bias=False,
             trunc_init=False,
             cls_embed=False,
-            pred_t_dim=9,
             device=None,
             **kwargs,
     ):
         super().__init__()
         self.trunc_init = trunc_init
         self.cls_embed = cls_embed
-        self.pred_t_dim = pred_t_dim
 
         self.max_length = max_length
-        self.patch_embed = patch_embed()
+        self.patch_embed = patch_embed(output_dim=embed_dim)
         input_size = (4, 4, 4, 2)
         self.input_size = input_size
 
@@ -178,34 +175,100 @@ class MaskedAutoencoderCSI(nn.Module):
         imgs = x.reshape(shape=(N, 1, T, H, W))
         return imgs
 
-    def random_masking(self, x, mask_ratio):
-        """
-        Perform per-sample random masking by per-sample shuffling.
-        Per-sample shuffling is done by argsort random noise.
-        x: [N, L, D], sequence
-        """
-        N, L, D = x.shape  # batch, length, dim
-        # pdb.set_trace()
-        len_keep = int(L * (1 - mask_ratio))
+    # def random_masking(self, x, mask_ratio):
+    #     """
+    #     Perform per-sample random masking by per-sample shuffling.
+    #     Per-sample shuffling is done by argsort random noise.
+    #     x: [N, L, D], sequence
+    #     """
+    #     N, L, D = x.shape  # batch, length, dim
+    #     # pdb.set_trace()
+    #     len_keep = int(L * (1 - mask_ratio))
 
-        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
+    #     noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
 
-        # sort noise for each sample
-        ids_shuffle = torch.argsort(
-            noise, dim=1
-        )  # ascend: small is keep, large is remove
+    #     # sort noise for each sample
+    #     ids_shuffle = torch.argsort(
+    #         noise, dim=1
+    #     )  # ascend: small is keep, large is remove
+    #     ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+    #     # keep the first subset
+    #     ids_keep = ids_shuffle[:, :len_keep]
+    #     x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+    #     # generate the binary mask: 0 is keep, 1 is remove
+    #     mask = torch.ones([N, L], device=x.device)
+    #     mask[:, :len_keep] = 0
+    #     # unshuffle to get the binary mask
+    #     mask = torch.gather(mask, dim=1, index=ids_restore)
+
+    #     return x_masked, mask, ids_restore, ids_keep
+
+    def random_masking(self, x, mask_ratio, token_length):
+        """
+        修正版：只在有效长度内进行随机 Masking，
+        并将 Padding 区域强制视为 'masked' (不输入 Encoder)，
+        同时确保 Loss 计算时能区分它们。
+        """
+        N, L, D = x.shape
+        
+        # 1. 生成随机噪声
+        noise = torch.rand(N, L, device=x.device)
+        
+        # 2. 处理变长序列的逻辑
+        # 创建一个 mask 标识哪些位置是 padding
+        col_indices = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L)
+        pad_mask = col_indices >= token_length.unsqueeze(1) # True 为 Padding
+        
+        # 3. 重要：将 Padding 位置的噪声设为无限大
+        # 这样在 argsort 时，Padding 永远会被排在最后（即被视为 "要被移除/Mask" 的部分）
+        noise[pad_mask] = 1e9
+        
+        # 4. 排序
+        # ids_shuffle: 小噪声在前 (Keep)，大噪声在后 (Masked + Padding)
+        ids_shuffle = torch.argsort(noise, dim=1)
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # keep the first subset
-        ids_keep = ids_shuffle[:, :len_keep]
-        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-
-        # generate the binary mask: 0 is keep, 1 is remove
+        # 5. 计算每个样本应该保留多少个 Token (基于各自的 token_length)
+        # len_keep 不再是一个标量，而是一个 (N,) 的向量
+        len_keep = (token_length * (1 - mask_ratio)).long()
+        
+        # 6. 生成二值 mask (0: keep, 1: remove)
         mask = torch.ones([N, L], device=x.device)
-        mask[:, :len_keep] = 0
-        # unshuffle to get the binary mask
-        mask = torch.gather(mask, dim=1, index=ids_restore)
-
+        # 由于 len_keep 是变长的，无法直接切片 mask[:, :len_keep] = 0
+        # 需要用掩码赋值
+        row_indices = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L)
+        # 排序后的索引中小于 len_keep 的位置设为 0 (Keep)
+        # 注意：这里比较的是排序后的顺序索引，即 "前 len_keep 个"
+        keep_mask_sorted = row_indices < len_keep.unsqueeze(1) 
+        
+        # 将排序后的 mask 还原回原始顺序比较麻烦，
+        # 更简单的方法是直接提取 x_masked
+        
+        # --- 提取 x_masked (比较 tricky 因为长度不一) ---
+        # 为了支持 batch 处理，通常我们还是得对齐到一个最大保留长度，或者允许 Encoder 接收 Padding
+        # 这里为了兼容你现有的 Transformer 结构，建议取最大的 len_keep
+        max_len_keep = len_keep.max().item()
+        
+        # 取出前 max_len_keep 个索引
+        ids_keep = ids_shuffle[:, :max_len_keep]
+        
+        # 收集数据
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+        
+        # 如果某些样本的 len_keep 小于 max_len_keep，需要把多出来的部分 mask 掉 (设为0)
+        # 这些位置虽然被 gather 进来了，但其实应该是 padding
+        valid_keep_mask = torch.arange(max_len_keep, device=x.device).unsqueeze(0) < len_keep.unsqueeze(1)
+        x_masked = x_masked * valid_keep_mask.unsqueeze(-1).type_as(x_masked)
+        
+        # --- 生成最终用于 loss 的 mask ---
+        # 还原 mask 顺序
+        # 在 sorted 域中，前 len_keep 是 0 (Keep)，后面是 1 (Mask)
+        mask_sorted = (~keep_mask_sorted).float()
+        # 还原顺序
+        mask = torch.gather(mask_sorted, dim=1, index=ids_restore)
+        
         return x_masked, mask, ids_restore, ids_keep
     
     def temporal_masking(self, x, input_size, mask_ratio=0.5):
@@ -221,6 +284,7 @@ class MaskedAutoencoderCSI(nn.Module):
             ids_restore: 原始索引，(B, max_length)
             ids_keep: 保留位置的索引，(B, L_keep_max)
         """
+        pdb.set_trace()
         B, max_length, D = x.shape
         device = x.device
         t, k, u = input_size
@@ -232,7 +296,7 @@ class MaskedAutoencoderCSI(nn.Module):
         patches_per_t = kb * ub                     # 每时间块的块数 (B,)
         t_keep = (tb * (1 - mask_ratio)).long()     # 需保留的时间块数 (B,)
         L_keep_sample = t_keep * patches_per_t      # 各样本实际保留块数 (B,)
-        pdb.set_trace()
+        # pdb.set_trace()
         # 2) 构建时序索引矩阵
         arange = torch.arange(max_length, device=device)  # (0到max_length-1)
         # 计算每个位置属于的时间块索引 (B, max_length)
@@ -252,7 +316,9 @@ class MaskedAutoencoderCSI(nn.Module):
         # 计算最大保留块数（补齐不同样本长度差异）
         L_keep_max = L_keep_sample.max().long()
         # 排序后将保留索引集中在前部 (B, max_length)
-        ids_sorted, _ = torch.sort(ids_filled, dim=1)
+        ids_sorted, sort_indices = torch.sort(ids_filled, dim=1)
+        ids_restore = torch.argsort(sort_indices, dim=1) 
+
         ids_keep = ids_sorted[:, :L_keep_max]  # 截取最大保留块数 (B, L_keep_max)
 
         # 6) 安全索引处理（避免超限索引导致错误）
@@ -316,7 +382,9 @@ class MaskedAutoencoderCSI(nn.Module):
         # 计算最大保留块数（补齐样本长度差异）
         L_keep_sample = (k_keep * tb * ub)  # 实际保留块数 (B,)
         L_keep_max = L_keep_sample.max().long()
-        ids_sorted, _ = torch.sort(ids_filled, dim=1)
+        ids_sorted, sort_indices = torch.sort(ids_filled, dim=1)
+        ids_restore = torch.argsort(sort_indices, dim=1) 
+
         ids_keep = ids_sorted[:, :L_keep_max]  # (B, L_keep_max)
         
         # 安全索引处理
@@ -338,19 +406,19 @@ class MaskedAutoencoderCSI(nn.Module):
         
         return x_masked, mask, ids_restore, ids_keep, is_valid
 
-    def forward_encoder(self, x, token_length, input_size, mask_ratio, mask_strategy='random'):
+    def forward_encoder(self, x, token_length, input_size, mask_ratio, mask_strategy='random', viz=False):
         # 维度转换
         # x = x[:, :-1, :, :]  # 切片处理数据维度
         # x = torch.unsqueeze(x, dim=1)
 
         # embed patches
-        # pdb.set_trace()
+        pdb.set_trace()
         x = self.patch_embed(x)
         N, L, C = x.shape
 
         if mask_strategy == 'random':
-            x, mask, ids_restore, ids_keep = self.random_masking(x, mask_ratio)
-            ids = torch.arange(self.max_length, device=x.device).unsqueeze(0).expand(N, self.max_length) 
+            x, mask, ids_restore, ids_keep = self.random_masking(x, mask_ratio, token_length)
+            ids = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L) 
             pad_mask_full = ids < token_length.unsqueeze(1)  # [B, L]
             # 利用 ids_keep 从 pad_mask_full 中抽出保留 token 的 padding 信息
             attn_mask = torch.gather(
@@ -358,9 +426,11 @@ class MaskedAutoencoderCSI(nn.Module):
                 index=ids_keep
             ) 
         elif mask_strategy == 'temporal':
+            pdb.set_trace()
             x, mask, ids_restore, ids_keep, is_keep = self.temporal_masking(x, input_size, mask_ratio)
             attn_mask = is_keep
         elif mask_strategy == 'freq':
+            pdb.set_trace()
             x, mask, ids_restore, ids_keep, is_keep = self.freq_masking(x, input_size, mask_ratio)
             attn_mask = is_keep
     
@@ -382,20 +452,21 @@ class MaskedAutoencoderCSI(nn.Module):
         pos_embed = self.pos_embed[:, cls_ind:, :].expand(x.shape[0], -1, -1)
         # pdb.set_trace()
         if mask_strategy == 'temporal' or mask_strategy == 'freq':
-            is_valid = ids_keep < self.max_length  # 标记有效索引 (B, L_keep_max)
+            pdb.set_trace()
+            is_valid = ids_keep < L # 标记有效索引 (B, L_keep_max)
             ids_safe = torch.where(is_valid, ids_keep, torch.zeros_like(ids_keep)) 
             pos_embed = torch.gather(
                 pos_embed,
                 dim=1,
                 index=ids_safe.unsqueeze(-1).repeat(1, 1, pos_embed.shape[2]),
             )
+            pos_embed = pos_embed * is_valid.unsqueeze(-1).to(pos_embed.dtype)
         else:
             pos_embed = torch.gather(
                 pos_embed,
                 dim=1,
                 index=ids_keep.unsqueeze(-1).repeat(1, 1, pos_embed.shape[2]),
             )
-
         if self.cls_embed:
             pos_embed = torch.cat(
                 [
@@ -418,6 +489,9 @@ class MaskedAutoencoderCSI(nn.Module):
             x = blk(x, attn_mask)
         x = self.norm(x)
 
+        if viz:
+            return x # [N, max_length, embed_dim]
+
         if self.cls_embed:
             # remove cls token
             x = x[:, 1:, :]
@@ -427,23 +501,26 @@ class MaskedAutoencoderCSI(nn.Module):
         return x, mask, ids_restore
 
     def forward_decoder(self, x, ids_restore, token_length):
-        # pdb.set_trace()
-        N = x.shape[0]
+        pdb.set_trace()
+        N, L, _ = x.shape
         # embed tokens
         x = self.decoder_embed(x)
         C = x.shape[-1]
 
+        # max_length = int(max(token_length).item())  # 获取最大长度
+        max_length = ids_restore.shape[1] # 获取最大长度
+        # print(x.shape[1])
         # append mask tokens to sequence
-        mask_tokens = self.mask_token.repeat(N, self.max_length - x.shape[1], 1)
+        mask_tokens = self.mask_token.repeat(N, max_length - x.shape[1], 1)
         x_ = torch.cat([x[:, :, :], mask_tokens], dim=1)  # no cls token
-        x_ = x_.view([N, self.max_length, C])
+        x_ = x_.view([N, max_length, C])
         x_ = torch.gather(
             x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x_.shape[2])
         )  # unshuffle
-        x = x_.view([N, self.max_length, C])
+        x = x_.view([N, max_length, C])
 
         # create attention mask
-        ids = torch.arange(self.max_length, device=x.device).unsqueeze(0).expand(N, self.max_length)  # [B, L]
+        ids = torch.arange(max_length, device=x.device).unsqueeze(0).expand(N, max_length)  # [B, L]
         attn_mask = ids < token_length.unsqueeze(1)  
 
         # 扩展掩码以适应CLS Token
@@ -458,7 +535,7 @@ class MaskedAutoencoderCSI(nn.Module):
             x = torch.cat((decoder_cls_tokens, x), dim=1)
 
         
-        decoder_pos_embed = self.decoder_pos_embed[:, :, :]
+        decoder_pos_embed = self.decoder_pos_embed[:, : max_length, :]
 
         # add pos embed
         x = x + decoder_pos_embed
@@ -466,7 +543,7 @@ class MaskedAutoencoderCSI(nn.Module):
         attn = self.decoder_blocks[0].attn
         requires_t_shape = hasattr(attn, "requires_t_shape") and attn.requires_t_shape
         if requires_t_shape:
-            x = x.view([N, self.max_length, C])
+            x = x.view([N, max_length, C])
 
         # apply Transformer blocks
         for blk in self.decoder_blocks:
@@ -477,7 +554,7 @@ class MaskedAutoencoderCSI(nn.Module):
         x = self.decoder_pred(x)
 
         if requires_t_shape:
-            x = x.view([N, self.max_length, -1])
+            x = x.view([N, max_length, -1])
 
         if self.cls_embed:
             # remove cls token
@@ -486,35 +563,8 @@ class MaskedAutoencoderCSI(nn.Module):
             x = x[:, :, :]
 
         return x
-
-    def calculate_metrics_per_pixel(self, original_spectrum, reconstructed_spectrum):
-        epsilon = 1e-10  # 避免除零错误
-
-        # 计算光谱角（Spectral Angle）逐像素
-        spectral_angle_per_pixel = torch.acos(torch.sum(original_spectrum * reconstructed_spectrum, dim=1) /
-                                              (torch.norm(original_spectrum, dim=1) * torch.norm(reconstructed_spectrum,
-                                                                                                 dim=1)+ epsilon ))#
-        return spectral_angle_per_pixel
-
-    def forward_loss(self, imgs, pred, mask):
-        target1 = imgs
-
-        if self.norm_pix_loss:
-            mean = target1.mean(dim=-1, keepdim=True)
-            var = target1.var(dim=-1, keepdim=True)
-            target1 = (target1 - mean) / (var + 1.0e-6) ** 0.5
-
-        loss1 = (pred - target1) ** 2  
-        loss1 = loss1.mean(dim=-1) 
-        mask = mask.view(loss1.shape)
-        loss1 = (loss1 * mask).sum() / mask.sum()
-
-        if not math.isfinite(loss1):
-            pdb.set_trace()
-
-        return loss1
     
-    def forward_loss_v3(self, imgs, pred, mask, token_length):
+    def forward_loss(self, imgs, pred, mask, token_length):
         target1 = imgs
         N, L, D = imgs.shape
         col_indices = torch.arange(L, device=imgs.device).expand(N, L)
@@ -532,71 +582,23 @@ class MaskedAutoencoderCSI(nn.Module):
 
         return loss1
     
-    def forward_loss_v4(self, imgs, pred, mask, token_length, input_size):
-        target1 = imgs
-
-        N, L, D = imgs.shape
-        col_indices = torch.arange(L, device=imgs.device).expand(N, L)
-        mask_in_length = col_indices < token_length[:, None]
-        bool_mask = mask.bool()
-        mask_nmse = bool_mask & mask_in_length
-
-        loss1 = (pred - target1) ** 2  
-        loss1 = loss1.mean(dim=-1) 
-        mask_nmse = mask_nmse.view(loss1.shape)
-        loss1 = (loss1 * mask_nmse).sum() / mask_nmse.sum()
-
-        reconstructed = patch_recover(pred, input_size)
-        doppler_loss = doppler_constraint(reconstructed)
-        lambda_doppler = 0.5
-        total_loss = loss1 + lambda_doppler * doppler_loss
-
-        if not math.isfinite(total_loss):
-            pdb.set_trace()
-
-        return total_loss
-
-    def forward(self, imgs, token_length, input_size=None, mask_ratio=0.9, mask_strategy="random"):
+    def forward(self, imgs, token_length, input_size=None, mask_ratio=0.5, mask_strategy="freq"):
         latent, mask, ids_restore = self.forward_encoder(imgs, token_length, input_size, mask_ratio, mask_strategy)
         pred = self.forward_decoder(latent, ids_restore, token_length)
         # loss = self.forward_loss(imgs, pred, mask)
-        loss = self.forward_loss_v3(imgs, pred, mask, token_length)
-        # loss = self.forward_loss_v4(imgs, pred, mask, token_length, input_size)
+        loss = self.forward_loss(imgs, pred, mask, token_length)
+        # loss = self.forward_loss_v2(imgs, pred, mask, token_length, input_size)
         return loss, pred, mask
 
 
-def mae_vit_base_patch8_96(**kwargs):
+def mae_vit_base_csi(**kwargs):
     model = MaskedAutoencoderCSI(
-        img_size=96,
-        in_chans=1,
-        patch_size=8,
-        embed_dim=768,
-        depth=12,
-        num_heads=12,
-        mlp_ratio=4,
-        num_frames=12,
-        pred_t_dim=12,
-        t_patch_size=3,
-        mask_ratio=0.90,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6),
-        **kwargs,
-    )
-    return model
-
-
-def mae_vit_base_patch8_128(**kwargs):
-    model = MaskedAutoencoderCSI(
-        img_size=128,
-        in_chans=1,
-        patch_size=8,
-        embed_dim=768,
-        depth=12,
-        num_heads=12,
-        mlp_ratio=4,
-        num_frames=12,
-        pred_t_dim=12,
-        t_patch_size=3,
-        mask_ratio=0.75,
+        embed_dim=512,
+        depth=6,
+        num_heads=8,
+        decoder_embed_dim=512,
+        decoder_num_heads=8,
+        mlp_ratio=2,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs,
     )
@@ -605,15 +607,24 @@ def mae_vit_base_patch8_128(**kwargs):
 
 def mae_vit_base_patch8_csi(**kwargs):
     model = MaskedAutoencoderCSI(
-        img_size=(48,64),
-        in_chans=1,
-        patch_size=4,
         embed_dim=768,
         num_heads=12,
-        # decoder_num_heads=12,
+        depth=12,
         mlp_ratio=4,
         num_frames=16,
-        pred_t_dim=16,
+        t_patch_size=4,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        **kwargs,
+    )
+    return model
+
+def mae_vit_csi(**kwargs):
+    model = MaskedAutoencoderCSI(
+        embed_dim=768,
+        num_heads=12,
+        depth=8,
+        mlp_ratio=4,
+        decoder_num_heads=16,
         t_patch_size=4,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs,
@@ -624,7 +635,7 @@ def mae_vit_base_patch8_csi(**kwargs):
 
 if __name__ == '__main__':
     input = torch.rand(2, 12, 128, 128)
-    model = mae_vit_base_patch8_128()
+    model = mae_vit_base_patch8_csi()
     output = model(input)
     print(output.shape)
 
