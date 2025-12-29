@@ -8,7 +8,6 @@
 import argparse
 import datetime
 import os
-import h5py
 import pdb
 import time
 from pathlib import Path
@@ -26,6 +25,7 @@ import torch.optim as optim
 
 from models.baseline.model import *
 from models.baseline.LLM4CP import Model as LLM4CP
+from models.baseline.PAD import PAD3
 from util.data import *
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -35,20 +35,17 @@ def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
     parser.add_argument('--batch_size', default=1, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
-    parser.add_argument('--epochs', default=200, type=int)
 
     # Model parameters
     parser.add_argument('--model_type', default='lstm', type=str, metavar='MODEL',
                         help='Name of model to train')
-    parser.add_argument('--resume', default='',
-                        help='resume from checkpoint')
+    parser.add_argument('--task_type', default='temporal', type=str, help='Name of task to test')
     # Optimizer parameters
-    parser.add_argument('--weight_decay', type=float, default=0.05,
-                        help='weight decay (default: 0.05)')
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
     parser.add_argument('--seed', default=0, type=int)
-
+    parser.add_argument('--resume', default='',
+                        help='resume from checkpoint')
     # Dataset parameters
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -56,8 +53,6 @@ def get_args_parser():
                         help='path where to tensorboard log')
     parser.add_argument('--dataset', default="D1", type=str,
                         help='dataset used to train')
-    parser.add_argument('--data_num', default=1.0, type=float,
-                    help='data num used to finetune')
     parser.add_argument('--data_dir', default=None, type=str,
                         help='the data dir used to train')
     parser.add_argument('--num_workers', default=0, type=int)
@@ -93,6 +88,18 @@ def save_best_checkpoint(model, save_path):  # save model function
     torch.save(model.state_dict(), model_out_path)
 
 
+def LoadBatch_ofdm_1(H):
+    # H: B,T,mul     [tensor complex]
+    # out:B,T,mul*2  [tensor real]
+    B, T, mul = H.shape
+    H_real = np.zeros([B, T, mul, 2])
+    H_real[:, :, :, 0] = H.real
+    H_real[:, :, :, 1] = H.imag
+    H_real = H_real.reshape([B, T, mul * 2])
+    H_real = torch.tensor(H_real, dtype=torch.float32)
+    return H_real
+
+
 def LoadBatch_ofdm_2(H):
     # H: B,T,K,mul     [tensor complex]
     # out:B,T,K,mul*2  [tensor real]
@@ -103,6 +110,7 @@ def LoadBatch_ofdm_2(H):
     H_real = H_real.reshape([B, T, K, mul * 2])
     H_real = torch.tensor(H_real, dtype=torch.float32)
     return H_real
+
 
 def main(args):
 
@@ -120,6 +128,12 @@ def main(args):
     
     os.makedirs(args.log_dir, exist_ok=True)
     args.distributed = False
+    # task_type = 'temporal'
+    # model_path = {
+    #     'lstm': f'/mnt/4T/2/zcy/CSIGPT/baseline_temporal_lstm_D1/checkpoint-149.pth',
+    #     'llm4cp': f'/mnt/4T/2/zcy/CSIGPT/baseline_temporal_llm4cp_D1/checkpoint-149.pth',
+    # }
+    NMSE = []
 
     path = os.path.join(args.data_dir, args.dataset, "test_data.mat")
     with h5py.File(path, 'r') as f:
@@ -128,86 +142,38 @@ def main(args):
         print("U, K, T:", U, K, T)
         t, k, u = T, K, U
 
-    prev_len = int(t / 2)
     pred_len = int(t / 2)
-    label_len = prev_len // 2 
-
-    dataset_train = data_load_baseline(args, dataset_type='train', data_num=args.data_num) # 加载数据
-    dataset_val = data_load_baseline(args, dataset_type='val') # 加载数据
-
+    
+    dataset_test = data_load_baseline(args, dataset_type='test') # 加载数据
 
     if args.model_type == 'lstm':
         model = LSTM(features=2*k, input_size=2*k, hidden_size=4*k, num_layers=4).to(device)
     elif args.model_type == 'llm4cp':
-        model = LLM4CP(pred_len=pred_len, prev_len=prev_len, K=k, UQh=1, UQv=1, BQh=1, BQv=1).to(device)
+        model = LLM4CP(pred_len=pred_len, prev_len=pred_len, K=k, UQh=1, UQv=1, BQh=1, BQv=1).to(device)
     elif args.model_type == 'transformer':
         model = Informer(enc_in=2*k, dec_in=2*k, c_out=2*k, out_len=pred_len, attn="full").to(device)
+    criterion = NMSELoss().to(device)    
+    error_nmse = 0
+    num = 0
+    epoch_val_loss = []
+    if args.model_type in ['lstm', 'llm4cp', 'transformer']:
+        print("Model = %s" % str(model))
 
-    
-    print("Model = %s" % str(model))
-
-    # following timm: set wd as 0 for bias and norm layers
-    criterion = NMSELoss().to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.05)
-
-    # misc.load_model_different_size(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-    if args.resume:       
         model.load_state_dict(torch.load(args.resume)) 
 
-    total = sum([param.nelement() for param in model.parameters()])
-    print("Number of parameter: %.5fM" % (total / 1e6))
-    total_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("Number of learnable parameter: %.5fM" % (total_learn / 1e6))
-        
-    print(f'Start training...{model}')
-    for epoch in range(args.epochs):
-        start_time = time.time()  # 记录当前时间
-        epoch_train_loss, epoch_val_loss = [], []
-        # ============Epoch Train=============== #
-        model.train()
-
-        for iteration, (samples, _, _) in enumerate(dataset_train, 1):
-            B, T, K, U = samples.shape
-            pred_len = int(T / 2)
-            prev_data, pred_data = samples[:, int(pred_len):, : ], samples[:, :int(pred_len), :]
-            pdb.set_trace()
-            prev_data = prev_data.permute(0, 3, 1, 2)
-            pred_data = pred_data.permute(0, 3, 1, 2)
-
-            prev_data = LoadBatch_ofdm_2(prev_data).to(device)
-            pred_data = LoadBatch_ofdm_2(pred_data).to(device)
-
-            prev_data = rearrange(prev_data, 'b u t k -> (b u) t k')
-            pred_data = rearrange(pred_data, 'b u t k -> (b u) t k')
-            pdb.set_trace()
-            optimizer.zero_grad()  # fixed
-            if args.model_type in ['lstm']:
-                out = model(prev_data, pred_len, device)
-            elif args.model_type in ['llm4cp']:
-                out = model(prev_data, None, None, None)
-            elif args.model_type in ['transformer']:
-                encoder_input = prev_data
-                dec_inp = torch.zeros_like(encoder_input[:, -pred_len:, :]).to(device)
-                decoder_input = torch.cat([encoder_input[:, prev_len - label_len:prev_len, :], dec_inp],
-                                            dim=1)
-                out = model(encoder_input, decoder_input)
-
-            loss = criterion(out, pred_data)  # compute loss
-            epoch_train_loss.append(loss.item())  # save all losses into a vector for one epoch
-
-            loss.backward()
-            optimizer.step()
-
-        t_loss = np.nanmean(np.array(epoch_train_loss))  # compute the mean value of all losses, as one epoch loss
-        epoch_time = time.time() - start_time  # 计算训练时间
-        print('Epoch: {}/{} training loss: {:.7f}, time: {:.2f}s'.format(epoch+1, args.epochs, t_loss, epoch_time)) 
-
+        total = sum([param.nelement() for param in model.parameters()])
+        print("Number of parameter: %.5fM" % (total / 1e6))
+        total_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print("Number of learnable parameter: %.5fM" % (total_learn / 1e6))
         # ============Epoch Validate=============== #
         model.eval()
+        nmse_list = []
         with torch.no_grad():
-            for iteration, (samples, _, _) in enumerate(dataset_val, 1):
+            for iteration, (samples, _, _) in enumerate(dataset_test, 1):
                 B, T, K, U = samples.shape
+                prev_len = int(T / 2)
                 pred_len = int(T / 2)
+                label_len = prev_len // 2 
                 prev_data, pred_data = samples[:, int(pred_len):, : ], samples[:, :int(pred_len), :]
 
                 prev_data = prev_data.permute(0, 3, 1, 2)
@@ -218,10 +184,9 @@ def main(args):
 
                 prev_data = rearrange(prev_data, 'b u t k -> (b u) t k')
                 pred_data = rearrange(pred_data, 'b u t k -> (b u) t k')
-                optimizer.zero_grad()  # fixed
                 if args.model_type in ['lstm']:
                     out = model(prev_data, pred_len, device)
-                elif args.model_type in ['llm4cp']:
+                elif args.model_type == 'llm4cp':
                     out = model(prev_data, None, None, None)
                 elif args.model_type in ['transformer']:
                     encoder_input = prev_data
@@ -230,16 +195,46 @@ def main(args):
                                                 dim=1)
                     out = model(encoder_input, decoder_input)
 
+                
                 loss = criterion(out, pred_data)  # compute loss
                 epoch_val_loss.append(loss.item())  # save all losses into a vector for one epoch
+
+                y_pred = out.reshape(-1,1).reshape(B,-1).detach().cpu().numpy()  # [Batch_size, 样本点数目]
+                y_target = pred_data.reshape(-1,1).reshape(B,-1).detach().cpu().numpy()
+
+                error_nmse += np.sum(np.mean(np.abs(y_target - y_pred) ** 2, axis=1) / np.mean(np.abs(y_target) ** 2, axis=1))
+                num += B
+                print(error_nmse, B)
+
+            nmse = error_nmse / num
             v_loss = np.nanmean(np.array(epoch_val_loss))
-            print('validate loss: {:.7f}'.format(v_loss))
-            if ((epoch + 1) % 50) == 0:
-                save_best_checkpoint(model, os.path.join(args.output_dir,f"checkpoint-{epoch}.pth"))
+            nmse_list.append(nmse)
+            print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}')   
+    elif args.model_type in ['pad']:
+        for iteration, (samples, _, _) in enumerate(dataset_test, 1):
+            B, T, K, U = samples.shape
+            for idx in range(B):
+                pred_len = int(T / 2)
+                prev_data, pred_data = samples[idx, int(pred_len):, :, :], samples[idx, :int(pred_len), :, :]
+                prev_data = rearrange(prev_data, 't k u -> k t u', k=K)
+                pred_data = rearrange(pred_data, 't k u -> k t u', k=K)
+
+                p = 4 if T == 16 else 6
+                out = PAD3(prev_data, p=p, startidx=pred_len, subcarriernum=K, Nr=1, Nt=u, pre_len=pred_len)
                 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+                pdb.set_trace()
+                out = LoadBatch_ofdm_1(out)
+                pred = LoadBatch_ofdm_1(pred_data)
+                loss = criterion(out, pred)
+                
+                error_nmse += loss
+            
+            num += B
+
+        nmse = error_nmse / num
+        v_loss = np.nanmean(np.array(epoch_val_loss))
+        print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}')   
+
 
 
 if __name__ == '__main__':

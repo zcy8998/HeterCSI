@@ -1,245 +1,190 @@
-# --------------------------------------------------------
-# References:
-# MAE: https://github.com/facebookresearch/mae
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# SpectralGPT: https://github.com/danfenghong/IEEE_TPAMI_SpectralGPT
-# --------------------------------------------------------
 import argparse
-import datetime
 import os
-import pdb
 import time
-from pathlib import Path
-
 import numpy as np
-
-pdb.set_trace = lambda *args, **kwargs: None
-
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from einops import rearrange
+from transformers import BertConfig, BertModel
+import matplotlib.pyplot as plt
 import warnings
 
-import torch
-import torch.backends.cudnn as cudnn
-from torch.autograd import Variable
-import torch.optim as optim
-
+# 引入数据加载器 (假设在 util/data.py 中)
+from models.baseline.CSIBERT import CSIBERT
 from models.baseline.model import *
-from models.baseline.LLM4CP import Model as LLM4CP
-from models.baseline.PAD import PAD3
-from util.data import *
-from util.misc import NativeScalerWithGradNormCount as NativeScaler
+from util.data import data_load_baseline
 
 warnings.filterwarnings("ignore")
 
-def get_args_parser():
-    parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
-    parser.add_argument('--batch_size', default=1, type=int,
-                        help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
 
-    # Model parameters
-    parser.add_argument('--model_type', default='lstm', type=str, metavar='MODEL',
-                        help='Name of model to train')
-    parser.add_argument('--task_type', default='temporal', type=str, help='Name of task to test')
-    # Optimizer parameters
-    parser.add_argument('--lr', type=float, default=None, metavar='LR',
-                        help='learning rate (absolute lr)')
-    parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default='',
-                        help='resume from checkpoint')
-    # Dataset parameters
-    parser.add_argument('--output_dir', default='./output_dir',
-                        help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
-                        help='path where to tensorboard log')
-    parser.add_argument('--dataset', default="D1", type=str,
-                        help='dataset used to train')
-    parser.add_argument('--data_dir', default=None, type=str,
-                        help='the data dir used to train')
-    parser.add_argument('--num_workers', default=0, type=int)
-    parser.add_argument('--pin_mem', action='store_true',
-                        help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
-
-    return parser
-
-
-def NMSE_cuda(x_hat, x):
+def calculate_nmse(x_hat, x):
     power = torch.sum(x ** 2)
     mse = torch.sum((x - x_hat) ** 2)
     nmse = mse / power
-    return nmse
+    return nmse.item()
 
+def preprocess_batch(H):
+    """将 (B, T, K, U) 转换为 (B*T, K, U*2)"""
+    B, T, K, U = H.shape
+    H_real = H.real
+    H_imag = H.imag
+    H_combined = torch.stack([H_real, H_imag], dim=-1)
+    H_combined = rearrange(H_combined, 'b t k u c -> (b t) k (u c)')
+    return H_combined.float()
 
-class NMSELoss(nn.Module):
-    def __init__(self, reduction='mean'):
-        super(NMSELoss, self).__init__()
-        self.reduction = reduction
+def apply_random_mask(inputs, mask_ratio=0.15, device='cuda'):
+    batch_size, seq_len, feat_dim = inputs.shape
+    # 生成随机掩码
+    mask = torch.rand((batch_size, seq_len), device=device) < mask_ratio
+    masked_inputs = inputs.clone()
+    # 将被 Mask 的位置置为 0
+    masked_inputs[mask.unsqueeze(-1).expand_as(inputs)] = 0
+    # BERT 需要 attention mask (这里设为全1，表示没有 Padding)
+    attention_mask = torch.ones((batch_size, seq_len), device=device)
+    return masked_inputs, mask, attention_mask
 
-    def forward(self, x_hat, x):
-        nmse = NMSE_cuda(x_hat, x)
-        if self.reduction == 'mean':
-            nmse = torch.mean(nmse)
-        else:
-            nmse = torch.sum(nmse)
-        return nmse
+# ==========================================
+# 3. 训练与评估逻辑
+# ==========================================
 
+def train_baseline(model, train_loader, epochs=5, lr=1e-3, device='cuda', mask_ratio=0.15):
+    """现场训练 MLP Baseline"""
+    model = model.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.MSELoss()
+    model.train()
+    
+    print(f"Training Baseline: {model.__class__.__name__}...")
+    for epoch in range(epochs):
+        total_loss = 0
+        for samples, _, _ in train_loader:
+            samples = samples.to(device)
+            clean_data = preprocess_batch(samples)
+            # 对 Baseline 也应用同样的 Mask 机制进行训练
+            masked_data, _, _ = apply_random_mask(clean_data, mask_ratio, device)
+            
+            optimizer.zero_grad()
+            outputs = model(masked_data)
+            loss = criterion(outputs, clean_data)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        # print(f"  Epoch {epoch+1}/{epochs} Loss: {total_loss/len(train_loader):.6f}")
+    return model
 
-def save_best_checkpoint(model, save_path):  # save model function
-    model_out_path = save_path
-    torch.save(model.state_dict(), model_out_path)
+def evaluate_model(model, test_loader, device='cuda', mask_ratio=0.15, model_name="Model"):
+    model.eval()
+    nmse_list = []
+    
+    with torch.no_grad():
+        for samples, _, _ in test_loader:
+            samples = samples.to(device)
+            clean_data = preprocess_batch(samples)
+            
+            # 测试时使用随机 Mask
+            masked_data, _, attn_mask = apply_random_mask(clean_data, mask_ratio, device)
+            
+            if "BERT" in model_name:
+                outputs = model(masked_data, attention_mask=attn_mask)
+            else:
+                outputs = model(masked_data) # MLP 不需要 attention mask
+            
+            batch_nmse = calculate_nmse(outputs, clean_data)
+            nmse_list.append(batch_nmse)
+            
+    avg_nmse = np.mean(nmse_list)
+    print(f"[{model_name}] Average NMSE: {avg_nmse:.6f}")
+    return avg_nmse
 
+# ==========================================
+# 4. 主程序
+# ==========================================
 
-def LoadBatch_ofdm_1(H):
-    # H: B,T,mul     [tensor complex]
-    # out:B,T,mul*2  [tensor real]
-    B, T, mul = H.shape
-    H_real = np.zeros([B, T, mul, 2])
-    H_real[:, :, :, 0] = H.real
-    H_real[:, :, :, 1] = H.imag
-    H_real = H_real.reshape([B, T, mul * 2])
-    H_real = torch.tensor(H_real, dtype=torch.float32)
-    return H_real
-
-
-def LoadBatch_ofdm_2(H):
-    # H: B,T,K,mul     [tensor complex]
-    # out:B,T,K,mul*2  [tensor real]
-    B, T, K, mul = H.shape
-    H_real = np.zeros([B, T, K, mul, 2])
-    H_real[:, :, :, :, 0] = H.real
-    H_real[:, :, :, :, 1] = H.imag
-    H_real = H_real.reshape([B, T, K, mul * 2])
-    H_real = torch.tensor(H_real, dtype=torch.float32)
-    return H_real
-
+def get_args_parser():
+    parser = argparse.ArgumentParser('Evaluation', add_help=False)
+    parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--data_dir', default=None, type=str, help='Data directory')
+    parser.add_argument('--dataset', default="D1", type=str)
+    parser.add_argument('--checkpoint_path', default='./output_dir/bert4mimo_best.pth', help='Path to BERT checkpoint')
+    parser.add_argument('--mask_ratio', default=0.15, type=float)
+    return parser
 
 def main(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
-    print("{}".format(args).replace(', ', ',\n'))
-
-    device = "cuda:0"
-    # device = torch.device("cpu")
-
-    seed = args.seed
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-    cudnn.benchmark = True
+    # 1. 加载数据
+    print("Loading Data...")
+    dataset_train = data_load_baseline(args, dataset_type='train', data_num=1.0) 
+    dataset_test = data_load_baseline(args, dataset_type='val')
     
-    os.makedirs(args.log_dir, exist_ok=True)
-    args.distributed = False
-    # task_type = 'temporal'
-    # model_path = {
-    #     'lstm': f'/mnt/4T/2/zcy/CSIGPT/baseline_temporal_lstm_D1/checkpoint-149.pth',
-    #     'llm4cp': f'/mnt/4T/2/zcy/CSIGPT/baseline_temporal_llm4cp_D1/checkpoint-149.pth',
-    # }
-    NMSE = []
+    train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    test_loader = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False)
 
-    path = os.path.join(args.data_dir, args.dataset, "test_data.mat")
-    with h5py.File(path, 'r') as f:
-        dset = f[f'H_test']
-        U, K, T, _ = dset.shape
-        print("U, K, T:", U, K, T)
-        t, k, u = T, K, U
-
-    pred_len = int(t / 2)
+    # 获取维度信息
+    # 假设 data_load_baseline 返回的数据形状是 (B, T, K, U)
+    # 我们需要取一个样本来确认 K (Seq Len) 和 U (Antenna)
+    sample_batch, _, _ = next(iter(test_loader))
+    B_raw, T_raw, K, U = sample_batch.shape
     
-    dataset_test = data_load_baseline(args, dataset_type='test') # 加载数据
+    feature_dim = U * 2 # 实部 + 虚部
+    seq_len = K
+    
+    print(f"Data Info: Sequence Length (Subcarriers)={seq_len}, Feature Dim (Antennas*2)={feature_dim}")
 
-    if args.model_type == 'lstm':
-        model = LSTM(features=2*k, input_size=2*k, hidden_size=4*k, num_layers=4).to(device)
-    elif args.model_type == 'llm4cp':
-        model = LLM4CP(pred_len=pred_len, prev_len=pred_len, K=k, UQh=1, UQv=1, BQh=1, BQv=1).to(device)
-    elif args.model_type == 'transformer':
-        model = Informer(enc_in=2*k, dec_in=2*k, c_out=2*k, out_len=pred_len, attn="full").to(device)
-    criterion = NMSELoss().to(device)    
-    error_nmse = 0
-    num = 0
-    epoch_val_loss = []
-    if args.model_type in ['lstm', 'llm4cp', 'transformer']:
-        print("Model = %s" % str(model))
+    results = {}
 
-        model.load_state_dict(torch.load(args.resume)) 
+    # ==========================================
+    # 2. 评估 BERT4MIMO
+    # ==========================================
+    print("\n--- Evaluating BERT4MIMO ---")
+    bert_model = CSIBERT(feature_dim=feature_dim).to(device)
+    
+    if os.path.isfile(args.checkpoint_path):
+        print(f"Loading BERT checkpoint from {args.checkpoint_path}")
+        bert_model.load_state_dict(torch.load(args.checkpoint_path))
+    else:
+        print(f"Warning: Checkpoint {args.checkpoint_path} not found! Using random weights for test.")
 
-        total = sum([param.nelement() for param in model.parameters()])
-        print("Number of parameter: %.5fM" % (total / 1e6))
-        total_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print("Number of learnable parameter: %.5fM" % (total_learn / 1e6))
-        # ============Epoch Validate=============== #
-        model.eval()
-        nmse_list = []
-        with torch.no_grad():
-            for iteration, (samples, _, _) in enumerate(dataset_test, 1):
-                B, T, K, U = samples.shape
-                prev_len = int(T / 2)
-                pred_len = int(T / 2)
-                label_len = prev_len // 2 
-                prev_data, pred_data = samples[:, int(pred_len):, : ], samples[:, :int(pred_len), :]
+    bert_nmse = evaluate_model(bert_model, test_loader, device, args.mask_ratio, "BERT4MIMO")
+    results['BERT4MIMO'] = bert_nmse
 
-                prev_data = prev_data.permute(0, 3, 1, 2)
-                pred_data = pred_data.permute(0, 3, 1, 2)
+    # ==========================================
+    # 3. 训练 & 评估 MLP Baseline
+    # ==========================================
+    print("\n--- Training & Evaluating MLP Baseline ---")
+    
+    # 论文中提到 Baseline 是 hidden layer of size 512 
+    mlp_model = MLP(seq_len=seq_len, feature_dim=feature_dim, hidden_size=512).to(device)
+    
+    # 现场训练 5 个 epoch (由于 MLP 参数少，收敛快，5个 epoch 足够看到性能差异)
+    mlp_model = train_baseline(mlp_model, train_loader, epochs=5, device=device, mask_ratio=args.mask_ratio)
+    
+    mlp_nmse = evaluate_model(mlp_model, test_loader, device, args.mask_ratio, "MLP")
+    results['MLP'] = mlp_nmse
 
-                prev_data = LoadBatch_ofdm_2(prev_data).to(device)
-                pred_data = LoadBatch_ofdm_2(pred_data).to(device)
-
-                prev_data = rearrange(prev_data, 'b u t k -> (b u) t k')
-                pred_data = rearrange(pred_data, 'b u t k -> (b u) t k')
-                if args.model_type in ['lstm']:
-                    out = model(prev_data, pred_len, device)
-                elif args.model_type == 'llm4cp':
-                    out = model(prev_data, None, None, None)
-                elif args.model_type in ['transformer']:
-                    encoder_input = prev_data
-                    dec_inp = torch.zeros_like(encoder_input[:, -pred_len:, :]).to(device)
-                    decoder_input = torch.cat([encoder_input[:, prev_len - label_len:prev_len, :], dec_inp],
-                                                dim=1)
-                    out = model(encoder_input, decoder_input)
-
-                
-                loss = criterion(out, pred_data)  # compute loss
-                epoch_val_loss.append(loss.item())  # save all losses into a vector for one epoch
-
-                y_pred = out.reshape(-1,1).reshape(B,-1).detach().cpu().numpy()  # [Batch_size, 样本点数目]
-                y_target = pred_data.reshape(-1,1).reshape(B,-1).detach().cpu().numpy()
-
-                error_nmse += np.sum(np.mean(np.abs(y_target - y_pred) ** 2, axis=1) / np.mean(np.abs(y_target) ** 2, axis=1))
-                num += B
-                print(error_nmse, B)
-
-            nmse = error_nmse / num
-            v_loss = np.nanmean(np.array(epoch_val_loss))
-            nmse_list.append(nmse)
-            print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}')   
-    elif args.model_type in ['pad']:
-        for iteration, (samples, _, _) in enumerate(dataset_test, 1):
-            B, T, K, U = samples.shape
-            for idx in range(B):
-                pred_len = int(T / 2)
-                prev_data, pred_data = samples[idx, int(pred_len):, :, :], samples[idx, :int(pred_len), :, :]
-                prev_data = rearrange(prev_data, 't k u -> k t u', k=K)
-                pred_data = rearrange(pred_data, 't k u -> k t u', k=K)
-
-                p = 4 if T == 16 else 6
-                out = PAD3(prev_data, p=p, startidx=pred_len, subcarriernum=K, Nr=1, Nt=u, pre_len=pred_len)
-                
-                pdb.set_trace()
-                out = LoadBatch_ofdm_1(out)
-                pred = LoadBatch_ofdm_1(pred_data)
-                loss = criterion(out, pred)
-                
-                error_nmse += loss
-            
-            num += B
-
-        nmse = error_nmse / num
-        v_loss = np.nanmean(np.array(epoch_val_loss))
-        print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}')   
-
-
+    # ==========================================
+    # 4. 结果展示
+    # ==========================================
+    print("\n================ Results Summary ================")
+    df = pd.DataFrame(list(results.items()), columns=['Model', 'NMSE'])
+    df = df.sort_values(by='NMSE')
+    print(df)
+    
+    # 保存结果图
+    plt.figure(figsize=(6, 5))
+    plt.bar(df['Model'], df['NMSE'], color=['#4285F4', '#EA4335'], width=0.5)
+    plt.ylabel('NMSE (Lower is Better)')
+    plt.title('Reconstruction NMSE: BERT4MIMO vs MLP')
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    output_img = 'nmse_comparison.png'
+    plt.savefig(output_img)
+    print(f"Chart saved to {output_img}")
 
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

@@ -485,4 +485,36 @@ class Autoencoder(nn.Module):
         x = self.postprocess(x)
 
         return x
+    
+
+class MLP(nn.Module):
+    def __init__(self, seq_len, feature_dim, hidden_size=512):
+        super(MLP, self).__init__()
+        # MLP 需要看到整个序列才能从上下文恢复 Mask，
+        # 所以输入维度是 sequence_length * feature_dim
+        self.input_size = seq_len * feature_dim
+        
+        self.net = nn.Sequential(
+            nn.Linear(self.input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size), # 加深一层以增强能力，也可去掉
+            nn.ReLU(),
+            nn.Linear(hidden_size, self.input_size)
+        )
+        self.seq_len = seq_len
+        self.feature_dim = feature_dim
+
+    def forward(self, x, attention_mask=None):
+        # x shape: (B, Seq, Feat)
+        batch_size = x.shape[0]
+        
+        # 1. 展平 (Flatten): (B, Seq * Feat)
+        x_flat = x.view(batch_size, -1)
+        
+        # 2. MLP 处理
+        out_flat = self.net(x_flat)
+        
+        # 3. 恢复形状 (Reshape): (B, Seq, Feat)
+        out = out_flat.view(batch_size, self.seq_len, self.feature_dim)
+        return out
 
