@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from fvcore.nn import FlopCountAnalysis, flop_count_table, parameter_count_table
 
 # 引入你项目中的模块
-import models.CSIGPT as CSIGPT
+import CSIGPT.models.heter_csi as heter_csi
 import util.misc as misc
 from util.data import *
 # 注意：不需要 engine_pretrain，因为我们只做前向推理
@@ -119,7 +119,7 @@ def main(args):
         raise NotImplementedError("此脚本暂只演示 global vs bucket")
 
     # 3. 构建模型
-    model = CSIGPT.__dict__[args.model](
+    model = heter_csi.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
     )

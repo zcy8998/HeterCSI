@@ -962,6 +962,234 @@ class DistributedBucketBatchSampler(Sampler):
         return int(self.global_num_batches)
 
 
+class DistributedBucketBatchSampler_V2(Sampler):
+    def __init__(
+        self,
+        dataset_bounds,
+        batch_size,
+        accum_steps,
+        num_buckets=2,
+        world_size=None,
+        rank=None,
+        shuffle=True,
+        drop_last=False,
+        seed=0,
+    ):
+        if num_buckets is None or num_buckets < 1:
+            raise ValueError("num_buckets must be a positive integer")
+
+        if world_size is None:
+            world_size = dist.get_world_size() if dist.is_initialized() else 1
+        if rank is None:
+            rank = dist.get_rank() if dist.is_initialized() else 0
+
+        self.dataset_bounds = dataset_bounds
+        self.seq_lengths = self._expand_seq_lengths_from_dataset_bounds(dataset_bounds)
+
+        self.num_buckets = num_buckets
+        self.batch_size = batch_size
+        self.accum_steps = accum_steps
+        self.world_size = world_size
+        self.rank = rank
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.seed = int(seed)
+        self.epoch = 0
+
+        # 用于存储调试信息
+        self.global_index_to_length = {i: self.seq_lengths[i] for i in range(len(self.seq_lengths))}
+        
+        # 1. 创建桶 (强制划分为 num_buckets)
+        self._create_buckets()
+        # 2. 调整桶大小以适应梯度累积
+        self._adjust_buckets_for_accumulation()
+        # 3. 分配样本到各个 Rank，并记录区间信息
+        self._assign_samples_to_ranks()
+
+        self.num_batches = self._calculate_num_batches()
+        self.global_num_batches = self._sync_num_batches()
+
+    @staticmethod
+    def _expand_seq_lengths_from_dataset_bounds(dataset_bounds):
+        seq_lengths = []
+        for entry in dataset_bounds:
+            if 'samples' not in entry or 'seq_length' not in entry:
+                raise ValueError("Each dataset_bounds entry must contain 'samples' and 'seq_length'.")
+            s = int(entry['samples'])
+            l = int(entry['seq_length'])
+            seq_lengths.extend([l] * s)
+        return seq_lengths
+
+    def _create_buckets(self):
+        """
+        不再使用 percentile 计算边界，而是直接对长度排序后均匀切分。
+        这保证了 bucket 数量严格等于 num_buckets。
+        """
+        # 获取所有索引并按序列长度排序, stable防止数据集混淆
+        sorted_indices = np.argsort(self.seq_lengths, kind='stable')
+        
+        # 将排序后的索引切分为 num_buckets 份
+        # np.array_split 可以处理不能整除的情况，尽可能平均分配
+        self.buckets = [
+            arr.tolist() 
+            for arr in np.array_split(sorted_indices, self.num_buckets)
+        ]
+        
+        # 打印桶信息用于验证
+        if self.rank == 0:
+            print(f"-------- Buckets Created (Total: {len(self.buckets)}) --------")
+
+    def _adjust_buckets_for_accumulation(self):
+        adjusted = []
+        batches_per_cycle = self.world_size * self.accum_steps
+        for bucket in self.buckets:
+            if not bucket:
+                adjusted.append([])
+                continue
+            num_batches = len(bucket) // self.batch_size
+            # 确保每个桶的 batch 数量是 (world_size * accum_steps) 的倍数
+            keep_batches = (num_batches // batches_per_cycle) * batches_per_cycle
+            adjusted.append(bucket[: keep_batches * self.batch_size] if keep_batches > 0 else [])
+        self.buckets = adjusted
+        
+        # 如果所有桶都被清空了，报错提示
+        if all(len(b) == 0 for b in self.buckets):
+            raise ValueError("No buckets left after adjustment. Reduce num_buckets or accum_steps.")
+
+    def _assign_samples_to_ranks(self):
+        """
+        将桶中的样本分配给各个 Rank。
+        同时记录每个 Rank 中，样本属于哪个原始桶的区间信息，供 __iter__ 使用。
+        """
+        # 1. 对每个桶内部进行 Shuffle (如果启用)
+        all_samples_per_bucket = []
+        for bid, bucket in enumerate(self.buckets):
+            if self.shuffle and bucket:
+                rng = np.random.RandomState(self.seed + self.epoch + bid)
+                shuffled = bucket.copy()
+                rng.shuffle(shuffled)
+                all_samples_per_bucket.append(shuffled)
+            else:
+                all_samples_per_bucket.append(bucket.copy())
+
+        # 2. 分配给各 Rank
+        self.rank_samples = [[] for _ in range(self.world_size)]
+        
+        # rank_bucket_intervals 用于记录每个 rank 的样本列表中，
+        # 哪一段对应哪一个桶。格式: [(start_idx, end_idx, bucket_id), ...]
+        self.rank_bucket_intervals = [[] for _ in range(self.world_size)]
+
+        for b_idx, bucket_samples in enumerate(all_samples_per_bucket):
+            bucket_len = len(bucket_samples)
+            bucket_batches = bucket_len // self.batch_size
+            
+            if bucket_batches == 0:
+                continue
+                
+            batches_per_rank = bucket_batches // self.world_size
+            if batches_per_rank == 0:
+                continue
+                
+            for r in range(self.world_size):
+                s = r * batches_per_rank * self.batch_size
+                e = s + batches_per_rank * self.batch_size
+                
+                # 获取当前 rank 分到的样本片段
+                rank_slice = bucket_samples[s:e]
+                
+                # 记录在 rank_samples 中的起始位置
+                start_pos = len(self.rank_samples[r])
+                self.rank_samples[r].extend(rank_slice)
+                end_pos = len(self.rank_samples[r])
+                
+                # 记录区间信息：(起始索引, 结束索引, 原始桶ID)
+                self.rank_bucket_intervals[r].append((start_pos, end_pos, b_idx))
+
+        # 3. 打印统计信息
+        if self.rank == 0:
+            num_nonempty = sum(1 for b in self.buckets if len(b) > 0)
+            print(f"\nBuckets: total={len(self.buckets)}, non-empty={num_nonempty}")
+            print(f"Batch={self.batch_size}, accum_steps={self.accum_steps}, world_size={self.world_size}")
+            
+            # 简略打印桶信息
+            for i, b in enumerate(self.buckets):
+                if b:
+                    avg = sum(self.seq_lengths[idx] for idx in b) / len(b)
+                    # 也可以打印 min/max 确认是否正确排序
+                    lens = [self.seq_lengths[idx] for idx in b]
+                    print(f"  Bucket {i}: {len(b)} samples, len_range=[{min(lens)}, {max(lens)}], avg={avg:.1f}")
+                else:
+                    print(f"  Bucket {i}: EMPTY (Filtered by accumulation adjustment)")
+
+            for r in range(self.world_size):
+                s = self.rank_samples[r]
+                if not s:
+                    print(f"  Rank {r}: No samples")
+                else:
+                    lengths = [self.global_index_to_length[i] for i in s]
+                    print(f"  Rank {r}: {len(s)} samples, batches={len(s)//self.batch_size}, min={min(lengths)}, max={max(lengths)}, avg={sum(lengths)/len(lengths):.1f}")
+
+    def _calculate_num_batches(self):
+        total = len(self.rank_samples[self.rank])
+        return total // self.batch_size if self.drop_last else math.ceil(total / self.batch_size)
+
+    def _sync_num_batches(self):
+        if self.world_size <= 1 or not dist.is_initialized():
+            return self.num_batches
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        tensor = torch.tensor(self.num_batches, dtype=torch.int32, device=device)
+        dist.all_reduce(tensor, op=dist.ReduceOp.MIN)
+        return int(tensor.item())
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+        if self.shuffle:
+            self._assign_samples_to_ranks()
+            self.num_batches = self._calculate_num_batches()
+            self.global_num_batches = self._sync_num_batches()
+
+    def __iter__(self):
+        """
+        新的迭代逻辑：直接利用 _assign_samples_to_ranks 中计算好的 bucket 区间。
+        不再依赖 bisect 查找，避免了边界模糊的问题。
+        """
+        current_rank_samples = self.rank_samples[self.rank]
+        intervals = self.rank_bucket_intervals[self.rank]
+        
+        if not current_rank_samples:
+            return iter(())
+
+        bucket_batches = []
+        
+        # 遍历每个桶的区间
+        for (start, end, bid) in intervals:
+            samples = current_rank_samples[start:end]
+            
+            # 将该区间的样本切分成 batch
+            batches_in_bucket = []
+            for j in range(0, len(samples), self.batch_size):
+                b = samples[j : j + self.batch_size]
+                if len(b) == self.batch_size or not self.drop_last:
+                    batches_in_bucket.append(b)
+            
+            # 如果需要 Shuffle，打乱这些 batch 的顺序
+            # (注意：样本已经在 _assign_samples_to_ranks 中打乱过了，这里是打乱 batch 的出场顺序)
+            if self.shuffle and batches_in_bucket:
+                rng = np.random.RandomState(self.seed + self.epoch + bid)
+                rng.shuffle(batches_in_bucket)
+            
+            bucket_batches.extend(batches_in_bucket)
+
+        # 截断到全局最小 batch 数，防止多卡训练死锁
+        bucket_batches = bucket_batches[: self.global_num_batches]
+        
+        for batch in bucket_batches:
+            yield batch
+
+    def __len__(self):
+        return int(self.global_num_batches)
+
+
 # force one dataset per step for all ranks
 class GroupBatchSampler(Sampler):
     """

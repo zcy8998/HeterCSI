@@ -22,7 +22,7 @@ import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
-import models.CSIGPT as CSIGPT
+import CSIGPT.models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask
@@ -137,7 +137,7 @@ def main(args):
     if global_rank == 0:
         dataset_val_all = data_load_main(args, dataset_type='test', test_type='normal') # 加载数据
 
-    model = CSIGPT.__dict__[args.model](
+    model = heter_csi.__dict__[args.model](
         depth=args.depth,
         cls_embed=args.cls_token,
         device=device

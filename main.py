@@ -24,8 +24,8 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
 
-import models.CSIGPT as CSIGPT
-import models.CrossCSI_moe as CrossCSI_MOE
+import models.heter_csi as heter_csi
+import models.heter_csi_moe as heter_csi_moe
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask, train_one_epoch_csi
@@ -137,7 +137,7 @@ def main(args):
 
     cudnn.benchmark = True
 
-    mmap_name = f"{args.mask_type}_{args.shuffle_type}_{len(args.dataset)}_{args.bucket_num}"
+    mmap_name = f"{args.mask_type}_{args.shuffle_type}_{len(args.dataset)}_{args.bucket_num}_12345"
     if args.distributed:
         if args.shuffle_type == 'global':
             dataset_train = CSIDataset_mmap_nopad(dataset=args.dataset, world_size=misc.get_world_size(),
@@ -185,7 +185,7 @@ def main(args):
     #         batch_sampler=sampler_train,
     #     )
     elif args.shuffle_type == 'bucket':
-        sampler_train = DistributedBucketBatchSampler(
+        sampler_train = DistributedBucketBatchSampler_V2(
             dataset_bounds=dataset_train.dataset_bounds,
             batch_size=args.batch_size,
             accum_steps=args.accum_iter,
@@ -229,12 +229,12 @@ def main(args):
 
     model = None
     if args.model_type == 'normal':
-        model = CSIGPT.__dict__[args.model](
+        model = heter_csi.__dict__[args.model](
             cls_embed=args.cls_token,
             device=device
         )
     elif args.model_type == 'moe':    
-        model = CrossCSI_MOE.__dict__[args.model](
+        model = heter_csi_moe.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
     )   
@@ -317,12 +317,12 @@ def main(args):
         epoch_total_time_str = str(datetime.timedelta(seconds=int(epoch_end_time - epoch_start_time)))
         print(f"Epoch {epoch}, time consume {epoch_total_time_str}")
 
-        if args.output_dir and (epoch % 1 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir and ((epoch+1) % 10 == 0 or epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        if args.output_dir and misc.is_main_process():
+        if args.output_dir and misc.is_main_process() and ((epoch+1) % 10 == 0 or epoch + 1 == args.epochs):
             if args.mask_type == 'all':
                 mask_list = {'random': 0.85, 'temporal': 0.5, 'freq': 0.5}
             else:

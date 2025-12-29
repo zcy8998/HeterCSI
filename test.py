@@ -26,8 +26,8 @@ from torch.utils.tensorboard import SummaryWriter
 # from torchao.quantization.linear_activation_quantized_tensor import \
 #     LinearActivationQuantizedTensor
 
-import models.CrossCSI_moe as CrossCSI_MOE
-import models.CSIGPT as CSIGPT
+import models.heter_csi_moe as heter_csi_moe
+import models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask
@@ -146,12 +146,12 @@ def main(args):
 
     model = None
     if args.model_type == 'normal':
-        model = CSIGPT.__dict__[args.model](
+        model = heter_csi.__dict__[args.model](
             cls_embed=args.cls_token,
             device=device
         )
     elif args.model_type == 'moe':    
-        model = CrossCSI_MOE.__dict__[args.model](
+        model = heter_csi_moe.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
     )

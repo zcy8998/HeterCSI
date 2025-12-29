@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 # from torchao.quantization.linear_activation_quantized_tensor import \
 #     LinearActivationQuantizedTensor
 
-import models.CSIGPT as CSIGPT
+import CSIGPT.models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask
@@ -154,7 +154,7 @@ def main(args):
     for idx, resume_path in enumerate(checkpoints):
         # instantiate a fresh model for each checkpoint
         print(f"\n=== Evaluating checkpoint: {resume_path or 'NONE'} ===")
-        model = CSIGPT.__dict__[args.model](
+        model = heter_csi.__dict__[args.model](
             cls_embed=args.cls_token,
             device=device
         )

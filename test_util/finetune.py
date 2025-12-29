@@ -23,8 +23,8 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
 
-import models.CSIGPT as CSIGPT
-import models.CrossCSI_moe as CrossCSI_MOE
+import CSIGPT.models.heter_csi as heter_csi
+import CSIGPT.models.heter_csi_moe as CrossCSI_MOE
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask, train_one_epoch_csi
@@ -140,7 +140,7 @@ def main(args):
         data_loader_train = data_load_main(args, dataset_type='train', test_type='normal') # 加载数据
         dataset_val_all = data_load_main(args, dataset_type='val', test_type='normal') # 加载数据
 
-    model = CSIGPT.__dict__[args.model](
+    model = heter_csi.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
     )
