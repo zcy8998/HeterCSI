@@ -8,6 +8,11 @@
 import argparse
 import datetime
 import os
+
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["MKL_NUM_THREADS"] = "8"
+os.environ["TORCH_NUM_THREADS"] = "8"
+
 import h5py
 import pdb
 import time
@@ -104,6 +109,24 @@ def LoadBatch_ofdm_2(H):
     H_real = torch.tensor(H_real, dtype=torch.float32)
     return H_real
 
+def LoadBatch_ofdm_2_tensor(H):
+    # H: B, T, K, mul [Complex Tensor]
+    # out: B, T, K, mul*2 [Real Tensor]
+    
+    # 确保是 Tensor
+    if not torch.is_tensor(H):
+        H = torch.tensor(H)
+        
+    # 如果是复数 Tensor，直接使用 PyTorch 高效 API
+    if H.is_complex():
+        # view_as_real 将复数拆分为 (..., 2) 即 [real, imag]
+        # flatten 将最后两维合并: mul, 2 -> mul*2
+        return torch.view_as_real(H).flatten(start_dim=-2).float()
+    else:
+        # 如果输入不是复数类型（或者是已经分开的float），按需处理
+        # 这里假设输入必定是复数数据
+        return H.float()
+
 def main(args):
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -174,8 +197,11 @@ def main(args):
             prev_data = prev_data.permute(0, 3, 1, 2)
             pred_data = pred_data.permute(0, 3, 1, 2)
 
-            prev_data = LoadBatch_ofdm_2(prev_data).to(device)
-            pred_data = LoadBatch_ofdm_2(pred_data).to(device)
+            prev_data = prev_data.to(device, non_blocking=True)
+            pred_data = pred_data.to(device, non_blocking=True)
+
+            prev_data = LoadBatch_ofdm_2_tensor(prev_data)
+            pred_data = LoadBatch_ofdm_2_tensor(pred_data)
 
             prev_data = rearrange(prev_data, 'b u t k -> (b u) t k')
             pred_data = rearrange(pred_data, 'b u t k -> (b u) t k')

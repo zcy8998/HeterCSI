@@ -121,6 +121,15 @@ def get_args_parser():
     return parser
 
 
+def linear_to_db(linear_value):
+    """将线性值转换为dB单位"""
+    return 10 * np.log10(linear_value)
+
+def db_to_linear(db_value):
+    """将dB值转换回线性单位"""
+    return 10 ** (db_value / 10)
+
+
 def main(args):
     misc.init_distributed_mode(args)
 
@@ -198,20 +207,25 @@ def main(args):
         else:
             mask_list = {args.mask_type: args.mask_ratio}
         model.eval()
+        all_tasks_nmse_linear = []
 
         for task_idx, (mask_type, mask_ratio) in enumerate(mask_list.items()):
-            nmse_list = []
+            nmse_linear_list = []
+            nmse_db_list = []  # 新增：存储dB结果
+            
             for index, dataset_test in enumerate(dataset_val_all):
                 dataset_name = dataset_test.dataset.get_dataset_name()
                 print(f"Start test {dataset_name}.")
+                
                 with torch.no_grad():
-                    error_nmse = 0
+                    error_nmse_linear = 0  # 改为线性误差累加
+                    error_nmse_db = 0      # 新增：dB误差累加
                     num = 0
                     epoch_val_loss = []
                     total_inference_time = 0.0
                     num_batches = 0
 
-                    # 重置 GPU 缓存（确保干净起点）
+                    # 重置 GPU 缓存
                     if torch.cuda.is_available() and device.type == 'cuda':
                         torch.cuda.reset_peak_memory_stats(device)
                         torch.cuda.empty_cache()
@@ -221,7 +235,7 @@ def main(args):
                         samples = samples.to(device)
                         token_length = token_length.to(device)
 
-                        # 同步 GPU（确保时间准确）
+                        # 同步 GPU
                         if device.type == 'cuda':
                             torch.cuda.synchronize()
 
@@ -235,7 +249,7 @@ def main(args):
                         total_inference_time += (end_time - start_time)
                         num_batches += 1
 
-                        # --- NMSE 计算（保持不变）---
+                        # --- NMSE 计算（支持dB单位）---
                         N, L, D = samples.shape
                         col_indices = torch.arange(L, device=samples.device).expand(N, L)
                         mask_in_length = col_indices < token_length[:, None]
@@ -246,66 +260,176 @@ def main(args):
                         y_pred = pred[mask_nmse == 1].reshape(-1, 1).reshape(N, -1).detach().cpu().numpy()
                         y_target = samples[mask_nmse == 1].reshape(-1, 1).reshape(N, -1).detach().cpu().numpy()
 
-                        error_nmse += np.sum(
-                            np.mean(np.abs(y_target - y_pred) ** 2, axis=1) /
-                            np.mean(np.abs(y_target) ** 2, axis=1)
-                        )
+                        # 计算线性域的NMSE
+                        mse_per_sample = np.mean(np.abs(y_target - y_pred) ** 2, axis=1)
+                        power_per_sample = np.mean(np.abs(y_target) ** 2, axis=1)
+                        nmse_linear = mse_per_sample / power_per_sample
+
+                        # 转换为dB单位（添加裁剪避免log(0)）
+                        nmse_db = 10 * np.log10(np.clip(nmse_linear, 1e-10, None))
+
+                        error_nmse_linear += np.sum(nmse_linear)
+                        error_nmse_db += np.sum(nmse_db)
                         num += y_pred.shape[0]
                         epoch_val_loss.append(loss.item())
 
-                        # if iteration == 1:  # 仅第一个批次
-                        #     try:
-                        #         # 获取第一个样本数据
-                        #         sample_idx = 0
-                        #         seq_len = token_length[sample_idx].item()
-                                
-                        #         # 转换为numpy数组
-                        #         real_sample = samples[sample_idx].detach().cpu().numpy()
-                        #         pred_sample = pred[sample_idx].detach().cpu().numpy()
-                        #         mask_sample = mask[sample_idx].detach().cpu().numpy().astype(bool)  # 确保是布尔类型
-                                
-                        #         # 生成热力图
-                        #         timestamp = time.strftime("%Y%m%d_%H%M%S")
-                        #         result = plot_prediction_error_heatmap(
-                        #             dataset=dataset_name,
-                        #             real_sample=real_sample,
-                        #             pred_sample=pred_sample,
-                        #             mask_sample=mask_sample,
-                        #             seq_len=seq_len,
-                        #             sample_idx=sample_idx,
-                        #             timestamp=timestamp,
-                        #             max_features=12  # 可自定义特征数量
-                        #         )
-                                
-                        #         if result.startswith("Error"):
-                        #             print(f"⚠️ {result}")
-                        #         else:
-                        #             print(f"✅ Heatmap saved: {result}")
-                        #     except Exception as e:
-                        #         print(f"⚠️ Heatmap generation failed: {str(e)}")
-
-                    nmse = error_nmse / num
+                    # 计算平均NMSE
+                    nmse_linear_avg = error_nmse_linear / num if num > 0 else float('inf')
+                    nmse_db_avg = error_nmse_db / num if num > 0 else float('inf')
+                    
                     v_loss = np.nanmean(np.array(epoch_val_loss))
                     avg_inference_time = total_inference_time / num_batches if num_batches > 0 else 0.0
 
-                    # 获取峰值内存（MB）
+                    # 获取峰值内存
                     if torch.cuda.is_available() and device.type == 'cuda':
                         peak_memory_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
                     else:
-                        peak_memory_mb = None  # 或使用 psutil 监控 CPU 内存（见下方说明）
+                        peak_memory_mb = None
 
-                    # 打印结果
+                    # 打印结果（包含dB单位）
                     log_str = (f'dataset_name: {dataset_name}, '
                             f'Validation loss: {v_loss:.7f}, '
-                            f'NMSE: {nmse:.7f}, '
+                            f'NMSE_linear: {nmse_linear_avg:.7f}, '
+                            f'NMSE_dB: {nmse_db_avg:.7f} dB, '
                             f'Avg Inference Time per Batch: {avg_inference_time * 1000:.3f} ms')
+                            
                     if peak_memory_mb is not None:
                         log_str += f', Peak GPU Mem: {peak_memory_mb:.2f} MB'
+                        
                     print(log_str)
 
-                    nmse_list.append(nmse)
+                    nmse_linear_list.append(nmse_linear_avg)
+                    nmse_db_list.append(nmse_db_avg)
 
-            print(f"Task type is {mask_type}, Average NMSE for all datasets: {np.mean(nmse_list):.7f}")
+            # 输出平均性能（线性和dB）
+            avg_nmse_linear = np.mean(nmse_linear_list)
+            avg_nmse_db = np.mean(nmse_db_list)
+            
+            print(f"Task type: {mask_type}")
+            print(f"Average NMSE (linear) for all datasets: {avg_nmse_linear:.7f}")
+            print(f"Average NMSE (dB) for all datasets: {avg_nmse_db:.7f} dB")
+            
+            # 性能改善计算（与基线对比）
+            baseline_nmse_db = -10.0  # 示例基线值，应根据实际情况调整
+            improvement_db = baseline_nmse_db - avg_nmse_db
+            improvement_ratio = db_to_linear(improvement_db)  # 转换为线性改善倍数
+            
+            print(f"Performance improvement: {improvement_db:.2f} dB "
+                f"(≈{improvement_ratio:.2f}x better than baseline)")
+            all_tasks_nmse_linear.append(avg_nmse_linear)
+        
+        final_avg_linear_all_tasks = np.mean(all_tasks_nmse_linear)
+        print("FINAL SUMMARY (All Tasks)")
+        print(f"Total Tasks Evaluated: {len(all_tasks_nmse_linear)}")
+        print(f"Overall Average NMSE (Linear): {final_avg_linear_all_tasks:.7f}")
+
+        # for task_idx, (mask_type, mask_ratio) in enumerate(mask_list.items()):
+        #     nmse_list = []
+        #     for index, dataset_test in enumerate(dataset_val_all):
+        #         dataset_name = dataset_test.dataset.get_dataset_name()
+        #         print(f"Start test {dataset_name}.")
+        #         with torch.no_grad():
+        #             error_nmse = 0
+        #             num = 0
+        #             epoch_val_loss = []
+        #             total_inference_time = 0.0
+        #             num_batches = 0
+
+        #             # 重置 GPU 缓存（确保干净起点）
+        #             if torch.cuda.is_available() and device.type == 'cuda':
+        #                 torch.cuda.reset_peak_memory_stats(device)
+        #                 torch.cuda.empty_cache()
+
+        #             for iteration, (samples, token_length, input_size) in enumerate(dataset_test, 1):
+        #                 optimizer.zero_grad()
+        #                 samples = samples.to(device)
+        #                 token_length = token_length.to(device)
+
+        #                 # 同步 GPU（确保时间准确）
+        #                 if device.type == 'cuda':
+        #                     torch.cuda.synchronize()
+
+        #                 start_time = time.perf_counter()
+        #                 loss, pred, mask = model(samples, token_length, input_size,
+        #                                         mask_ratio=mask_ratio, mask_strategy=mask_type)
+        #                 if device.type == 'cuda':
+        #                     torch.cuda.synchronize()
+        #                 end_time = time.perf_counter()
+
+        #                 total_inference_time += (end_time - start_time)
+        #                 num_batches += 1
+
+        #                 # --- NMSE 计算（保持不变）---
+        #                 N, L, D = samples.shape
+        #                 col_indices = torch.arange(L, device=samples.device).expand(N, L)
+        #                 mask_in_length = col_indices < token_length[:, None]
+        #                 bool_mask = mask.bool()
+        #                 mask_nmse = bool_mask & mask_in_length
+
+        #                 N = pred.shape[0]
+        #                 y_pred = pred[mask_nmse == 1].reshape(-1, 1).reshape(N, -1).detach().cpu().numpy()
+        #                 y_target = samples[mask_nmse == 1].reshape(-1, 1).reshape(N, -1).detach().cpu().numpy()
+
+        #                 error_nmse += np.sum(
+        #                     np.mean(np.abs(y_target - y_pred) ** 2, axis=1) /
+        #                     np.mean(np.abs(y_target) ** 2, axis=1)
+        #                 )
+        #                 num += y_pred.shape[0]
+        #                 epoch_val_loss.append(loss.item())
+
+        #                 # if iteration == 1:  # 仅第一个批次
+        #                 #     try:
+        #                 #         # 获取第一个样本数据
+        #                 #         sample_idx = 0
+        #                 #         seq_len = token_length[sample_idx].item()
+                                
+        #                 #         # 转换为numpy数组
+        #                 #         real_sample = samples[sample_idx].detach().cpu().numpy()
+        #                 #         pred_sample = pred[sample_idx].detach().cpu().numpy()
+        #                 #         mask_sample = mask[sample_idx].detach().cpu().numpy().astype(bool)  # 确保是布尔类型
+                                
+        #                 #         # 生成热力图
+        #                 #         timestamp = time.strftime("%Y%m%d_%H%M%S")
+        #                 #         result = plot_prediction_error_heatmap(
+        #                 #             dataset=dataset_name,
+        #                 #             real_sample=real_sample,
+        #                 #             pred_sample=pred_sample,
+        #                 #             mask_sample=mask_sample,
+        #                 #             seq_len=seq_len,
+        #                 #             sample_idx=sample_idx,
+        #                 #             timestamp=timestamp,
+        #                 #             max_features=12  # 可自定义特征数量
+        #                 #         )
+                                
+        #                 #         if result.startswith("Error"):
+        #                 #             print(f"⚠️ {result}")
+        #                 #         else:
+        #                 #             print(f"✅ Heatmap saved: {result}")
+        #                 #     except Exception as e:
+        #                 #         print(f"⚠️ Heatmap generation failed: {str(e)}")
+
+        #             nmse = error_nmse / num
+        #             v_loss = np.nanmean(np.array(epoch_val_loss))
+        #             avg_inference_time = total_inference_time / num_batches if num_batches > 0 else 0.0
+
+        #             # 获取峰值内存（MB）
+        #             if torch.cuda.is_available() and device.type == 'cuda':
+        #                 peak_memory_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+        #             else:
+        #                 peak_memory_mb = None  # 或使用 psutil 监控 CPU 内存（见下方说明）
+
+        #             # 打印结果
+        #             log_str = (f'dataset_name: {dataset_name}, '
+        #                     f'Validation loss: {v_loss:.7f}, '
+        #                     f'NMSE: {nmse:.7f}, '
+        #                     f'Avg Inference Time per Batch: {avg_inference_time * 1000:.3f} ms')
+        #             if peak_memory_mb is not None:
+        #                 log_str += f', Peak GPU Mem: {peak_memory_mb:.2f} MB'
+        #             print(log_str)
+
+        #             nmse_list.append(nmse)
+
+        #     print(f"Task type is {mask_type}, Average NMSE for all datasets: {np.mean(nmse_list):.7f}")
 
 
 def plot_prediction_error_heatmap(dataset, real_sample, pred_sample, mask_sample, seq_len, 

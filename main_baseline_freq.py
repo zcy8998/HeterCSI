@@ -1,6 +1,11 @@
 import argparse
 import datetime
 import os
+
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["MKL_NUM_THREADS"] = "8"
+os.environ["TORCH_NUM_THREADS"] = "8"
+
 import h5py
 import pdb
 import time
@@ -99,6 +104,35 @@ def LoadBatch_ofdm_2(H):
     H_real = torch.tensor(H_real, dtype=torch.float32)
     return H_real
 
+# 修改后的函数，支持 GPU Tensor 操作，移除 Numpy 依赖
+def LoadBatch_ofdm_2_tensor(H):
+    # H: B, T, K, mul (complex via last dim usually? 
+    # based on your code: H_real[:, :, :, :, 0] = H.real)
+    # 你的原始代码中 H 似乎是一个 复数 numpy 数组或者包含复数的 Tensor？
+    # 如果 H 是 PyTorch 的 Complex Tensor (complex64/128):
+    
+    if not torch.is_tensor(H):
+        H = torch.tensor(H)
+
+    if not H.is_contiguous():
+        H = H.contiguous()
+    # 假设输入已经是 (B, T, K, mul) 且在 GPU 上
+    # 如果输入本身就是 Complex Tensor
+    if H.is_complex():
+        # Stack real and imag in a new last dimension
+        H_real = torch.stack([H.real, H.imag], dim=-1) # (B, T, K, mul, 2)
+    else:
+        # 如果输入本来就是分开的或者是其他格式，需要根据上游数据格式调整
+        # 这里假设它是复数 tensor
+        pass
+
+    # Flatten the last two dimensions: mul * 2
+    B, T, K, mul = H.shape
+    # view/reshape 是零拷贝操作，极快
+    H_out = torch.view_as_real(H).view(B, T, K, -1) 
+    
+    return H_out.float()
+
 def main(args):
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -190,6 +224,9 @@ def main(args):
             # 如果你是要做常规预测（前 -> 后），请反过来。
             # 这里保留原代码的切分逻辑，只是换了维度：
             prev_data, pred_data = samples[:, :, int(pred_len):, : ], samples[:, :, :int(pred_len), :] 
+
+            prev_data = prev_data.to(device, non_blocking=True) 
+            pred_data = pred_data.to(device, non_blocking=True)
             
             # [Modified]: Permute 维度置换
             # 目标: (Batch, User, Subcarrier, Time) -> (B, U, K, T)
@@ -199,8 +236,8 @@ def main(args):
 
             # LoadBatch 会把最后一维当做复数展开。
             # 输入 (B, U, K_part, T) -> 输出 (B, U, K_part, T*2)
-            prev_data = LoadBatch_ofdm_2(prev_data).to(device)
-            pred_data = LoadBatch_ofdm_2(pred_data).to(device)
+            prev_data = LoadBatch_ofdm_2_tensor(prev_data)
+            pred_data = LoadBatch_ofdm_2_tensor(pred_data).to(device)
 
             # [Modified]: Rearrange
             # 这里的语义变成了：Batch=b*u, Sequence=k, Feature=t

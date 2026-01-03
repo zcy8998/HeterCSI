@@ -38,7 +38,7 @@ def get_args_parser():
     parser.add_argument('--data_num', default=1.0, type=float)
     parser.add_argument('--data_dir', default=None, type=str)
     parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--mask_ratio', default=0.15, type=float, help='Masking ratio for BERT')
+    parser.add_argument('--mask_ratio', default=0.85, type=float, help='Masking ratio for BERT')
     parser.add_argument('--pin_mem', action='store_true',
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     return parser
@@ -149,7 +149,7 @@ def main(args):
     print(f"Initializing BERT4MIMO with Feature Dim: {feature_dim} (Sequence Len: {K_dim})")
     model = None
     if args.model_type == 'bert4mimo':
-        model = CSIBERT(feature_dim=feature_dim, num_attention_heads=8).to(device)
+        model = CSIBERT(feature_dim=feature_dim).to(device)
     elif args.model_type == 'mlp':
         # MLP 初始化需要传入序列长度 (seq_len) 用于展平操作
         model = MLP(seq_len=seq_len, feature_dim=feature_dim, hidden_size=512).to(device)

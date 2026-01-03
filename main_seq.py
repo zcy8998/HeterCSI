@@ -210,6 +210,7 @@ def main(args):
             f.write("epoch,mask_type,avg_nmse\n") 
 
     for epoch in range(args.start_epoch, args.epochs):
+        epoch_start_time = time.time()
         for data_loader in data_loaders:
             if args.distributed:
                 data_loader.sampler.set_epoch(epoch)
@@ -228,6 +229,11 @@ def main(args):
                     log_writer=log_writer,
                     args=args
                 )
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+        total_training_time += epoch_duration
+        epoch_total_time_str = str(datetime.timedelta(seconds=int(epoch_end_time - epoch_start_time)))
+        print(f"Epoch {epoch}, time consume {epoch_total_time_str}")
 
         if args.output_dir and ((epoch+1) % 10 == 0 or epoch + 1 == args.epochs):
             misc.save_model(

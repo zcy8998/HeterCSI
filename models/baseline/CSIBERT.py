@@ -5,7 +5,7 @@ from einops import rearrange
 
 
 class CSIBERT(nn.Module):
-    def __init__(self, feature_dim, num_hidden_layers=6, num_attention_heads=6):
+    def __init__(self, feature_dim, num_hidden_layers=6, num_attention_heads=8):
         super(CSIBERT, self).__init__()
         # 使用较轻量级的配置，你可以根据显存大小调整 layers 和 heads
         self.config = BertConfig(
