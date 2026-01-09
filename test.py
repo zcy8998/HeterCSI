@@ -219,7 +219,6 @@ def main(args):
                 
                 with torch.no_grad():
                     error_nmse_linear = 0  # 改为线性误差累加
-                    error_nmse_db = 0      # 新增：dB误差累加
                     num = 0
                     epoch_val_loss = []
                     total_inference_time = 0.0
@@ -265,17 +264,13 @@ def main(args):
                         power_per_sample = np.mean(np.abs(y_target) ** 2, axis=1)
                         nmse_linear = mse_per_sample / power_per_sample
 
-                        # 转换为dB单位（添加裁剪避免log(0)）
-                        nmse_db = 10 * np.log10(np.clip(nmse_linear, 1e-10, None))
-
                         error_nmse_linear += np.sum(nmse_linear)
-                        error_nmse_db += np.sum(nmse_db)
                         num += y_pred.shape[0]
                         epoch_val_loss.append(loss.item())
 
                     # 计算平均NMSE
                     nmse_linear_avg = error_nmse_linear / num if num > 0 else float('inf')
-                    nmse_db_avg = error_nmse_db / num if num > 0 else float('inf')
+                    nmse_db_avg = 10 * np.log10(np.clip(nmse_linear_avg, 1e-10, None))
                     
                     v_loss = np.nanmean(np.array(epoch_val_loss))
                     avg_inference_time = total_inference_time / num_batches if num_batches > 0 else 0.0
@@ -299,23 +294,15 @@ def main(args):
                     print(log_str)
 
                     nmse_linear_list.append(nmse_linear_avg)
-                    nmse_db_list.append(nmse_db_avg)
 
             # 输出平均性能（线性和dB）
             avg_nmse_linear = np.mean(nmse_linear_list)
-            avg_nmse_db = np.mean(nmse_db_list)
+            avg_nmse_db = 10 * np.log10(np.clip(avg_nmse_linear, 1e-10, None))
             
             print(f"Task type: {mask_type}")
             print(f"Average NMSE (linear) for all datasets: {avg_nmse_linear:.7f}")
             print(f"Average NMSE (dB) for all datasets: {avg_nmse_db:.7f} dB")
             
-            # 性能改善计算（与基线对比）
-            baseline_nmse_db = -10.0  # 示例基线值，应根据实际情况调整
-            improvement_db = baseline_nmse_db - avg_nmse_db
-            improvement_ratio = db_to_linear(improvement_db)  # 转换为线性改善倍数
-            
-            print(f"Performance improvement: {improvement_db:.2f} dB "
-                f"(≈{improvement_ratio:.2f}x better than baseline)")
             all_tasks_nmse_linear.append(avg_nmse_linear)
         
         final_avg_linear_all_tasks = np.mean(all_tasks_nmse_linear)

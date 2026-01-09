@@ -346,12 +346,14 @@ def main(args):
 
     # 4. 执行评估
     nmse_result = evaluate_model(model, test_loader, device, args.mask_ratio, args.model_type)
+    nmse_db = 10 * np.log10(np.clip(nmse_result, 1e-10, None))
 
     # 5. 输出简报
     print("\n" + "="*30)
     print(f"Evaluation Finished")
     print(f"Model: {args.model_type}")
     print(f"Final NMSE: {nmse_result:.8f}")
+    print(f"NMSE (dB): {nmse_db:.4f}")
     print("="*30)
 
 if __name__ == '__main__':

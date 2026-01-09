@@ -232,8 +232,9 @@ def main(args):
             num += B
 
         nmse = error_nmse / num
+        nmse_db = 10 * np.log10(np.clip(nmse, 1e-10, None))
         v_loss = np.nanmean(np.array(epoch_val_loss))
-        print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}')   
+        print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}, NMSE (dB): {nmse_db:.4f}')   
 
 
 

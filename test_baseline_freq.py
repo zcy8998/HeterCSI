@@ -134,12 +134,10 @@ def main(args):
         print("U, K, T:", U, K, T)
         t, k, u = T, K, U
 
-    # [Modified]: 预测维度是 K (Frequency)
     pred_len = int(k / 2) 
     
     dataset_test = data_load_baseline(args, dataset_type='test') # 加载数据
 
-    # [Modified]: Feature dim 变为 2*t
     input_feat_dim = 2 * t
 
     if args.model_type == 'lstm':
@@ -220,88 +218,10 @@ def main(args):
                 print(error_nmse, B)
 
             nmse = error_nmse / num
+            nmse_db = 10 * np.log10(np.clip(nmse, 1e-10, None))
             v_loss = np.nanmean(np.array(epoch_val_loss))
-            nmse_list.append(nmse)
-            print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}')   
-    
-    elif args.model_type in ['pad']:
-        # [Modified] PAD for Frequency Extrapolation
-        # PAD 原本是基于多项式拟合进行时域外推。
-        # 这里我们将 频域 K 伪装成 时域 T 喂给 PAD。
-        for iteration, (samples, _, _) in enumerate(dataset_test, 1):
-            B, T, K, U = samples.shape
-            for idx in range(B):
-                pred_len = int(K / 2) # [Modified]
-                
-                # [Modified] Slicing on K
-                # prev_data: 已知的部分 (Input)
-                # pred_data: 待预测的部分 (Label)
-                prev_data, pred_data = samples[idx, :, int(pred_len):, :], samples[idx, :, :int(pred_len), :]
-                
-                # PAD 需要特定的输入格式。原代码: rearrange(prev_data, 't k u -> k t u')
-                # 假设 PAD3 内部逻辑是对第2维(Time)进行处理。
-                # 现在的输入 prev_data 是 [T, K_half, U]。
-                # 我们希望 PAD 对 K 进行外推，所以需要把 K 放到 PAD 认为是 Time 的位置。
-                # 构造为: [Feature=T, Sequence=K, User=U] -> 对应 PAD 的参数语义
-                
-                # 调整：将 T 视为 Feature (dim 0), K 视为 Time (dim 1)
-                # 原代码 PAD3 调用：PAD3(data, ..., subcarriernum=K, ...)
-                # 这里的 data 应该是 [Subcarrier, Time, User] ? 
-                # 不，原代码 't k u -> k t u' 说明 PAD 期望 [Subcarrier, Time, User]。
-                # 如果我们现在是在频域预测 (已知 K_half 推 K_half)，
-                # 我们可以把 T 和 K 的角色互换。
-                
-                # 策略：保持 'k t u' 的结构，但在调用时让 PAD 认为 T 是 K，K 是 T。
-                # prev_data shape: [T, K_half, U]
-                # target input shape for PAD: [Pseudo_Subcarrier=T, Pseudo_Time=K_half, U]
-                
-                pad_input = prev_data.permute(0, 1, 2) # [T, K, U] - 已经符合 [Feat, Seq, U]
-                
-                # 注意：PAD3 的参数 subcarriernum 通常用于循环。
-                # 这里我们要循环 T (现在的 dim 0)，在 K (现在的 dim 1) 上做预测。
-                
-                # p 是多项式阶数，需根据 K 的长度调整，而不是 T
-                p = 4 if K == 16 else 6 # [Modified logic if needed]
-                
-                # 调用 PAD3
-                # data: [T, K_half, U]
-                # startidx: 预测起始点 (相对于 K)
-                # subcarriernum: 这里传入 T (作为外部循环次数)
-                # Nt: U
-                # pre_len: K_half
-                out = PAD3(pad_input, p=p, startidx=pred_len, subcarriernum=T, Nr=1, Nt=U, pre_len=pred_len)
-                
-                # out shape: [T, K_half, U, 2] (real/imag split inside PAD?) or complex?
-                # PAD3 return 通常是 complex tensor 或 numpy
-                
-                # 修正 pred_data 格式以计算 Loss
-                # pred_data: [T, K_half, U] -> 转换为实部虚部格式
-                # 假设 LoadBatch_ofdm_1 接受 [B, T, mul]
-                # 这里我们把 batch 设为 1 或合并 dims
-                
-                # 由于 PAD 输出格式比较特定，这里仅做逻辑占位，需确保 PAD3 输出与 pred 维度一致
-                # 简单做法：计算 loss 时手动展平
-                
-                # 这里略过 LoadBatch 转换，直接算 complex error 可能更直接，或者沿用原流程
-                # 为保持一致性，假设 out 已经是 tensor
-                
-                # 仅做简单 reshape 算 loss
-                if isinstance(out, torch.Tensor):
-                    pass
-                else:
-                    out = torch.tensor(out)
-                
-                # 统一转成 real 结构计算 MSE
-                # out: [T, K_half, U] (Complex)
-                # pred_data: [T, K_half, U] (Complex)
-                loss = torch.mean(torch.abs(out - pred_data)**2) # 简化计算
-                
-                error_nmse += loss.item()
-            
-            num += B
+            print(f'dataset_name: {args.dataset}, Validation loss: {v_loss:.7f}, NMSE: {nmse:.7f}, NMSE (dB): {nmse_db:.4f}')   
 
-        nmse = error_nmse / num
-        print(f'dataset_name: {args.dataset}, NMSE: {nmse:.7f}')   
 
 if __name__ == '__main__':
     args = get_args_parser()

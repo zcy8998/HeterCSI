@@ -23,7 +23,7 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
 
-import CSIGPT.models.heter_csi as heter_csi
+import models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask, train_one_epoch_csi
@@ -201,13 +201,17 @@ def main(args):
         print("Number of learnable parameter: %.5fM" % (total_learn / 1e6))
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    total_training_time = 0.0 
 
     if misc.is_main_process() and args.output_dir:
         results_file = os.path.join(args.output_dir, f"nmse_results_{args.mask_type}_seq.csv")
+        time_results_file = os.path.join(args.output_dir, f"nmse_results_pure_time_{args.mask_type}_seq.csv") 
         if args.resume:
             results_file += "_finuetune"
         with open(results_file, "w") as f:
             f.write("epoch,mask_type,avg_nmse\n") 
+        with open(time_results_file, "w") as f:
+            f.write("train_time,mask_type,avg_nmse\n")
 
     for epoch in range(args.start_epoch, args.epochs):
         epoch_start_time = time.time()
@@ -292,6 +296,10 @@ def main(args):
 
                 with open(results_file, "a") as f:
                     f.write(f"{epoch},{mask_type},{avg_nmse:.7f}\n")
+                
+                with open(time_results_file, "a") as f:
+                    # 这里的 total_training_time_min 是截止到当前 Epoch 训练结束时的纯训练累计时间
+                    f.write(f"{total_training_time:.4f},{mask_type},{avg_nmse:.7f}\n")
                 
 
     total_time = time.time() - start_time
