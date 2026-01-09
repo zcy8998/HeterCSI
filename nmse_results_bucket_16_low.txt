@@ -1,0 +1,7 @@
+Evaluation Results for Bucket Num: 16
+==================================================
+Task: random, Avg NMSE (dB): -3.7255526
+Task: temporal, Avg NMSE (dB): -1.5501049
+Task: freq, Avg NMSE (dB): -2.3399086
+--------------------------------------------------
+Overall Average NMSE (dB) [All Tasks]: -2.4479625

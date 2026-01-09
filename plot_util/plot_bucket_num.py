@@ -4,98 +4,110 @@ import os
 from matplotlib.ticker import ScalarFormatter
 
 # --------------------------
-# 1. IEEE 风格全局设置
+# 1. IEEE 风格全局设置 (您提供的配置)
 # --------------------------
-# 使用 Times New Roman 字体，符合 IEEE 论文标准
-config = {
-    "font.family": "serif",
-    "font.serif": ["Times New Roman"],
-    "mathtext.fontset": "stix",  # 数学公式字体更接近 LaTeX
-    "font.size": 12,             # 基础字号
-    "axes.labelsize": 14,        # 轴标签字号
-    "legend.fontsize": 12,       # 图例字号
-    "xtick.labelsize": 12,       # X轴刻度字号
-    "ytick.labelsize": 12,       # Y轴刻度字号
-    "axes.linewidth": 1.0,       # 边框粗细
-    "grid.linestyle": "--",      # 网格虚线
-    "grid.alpha": 0.5,           # 网格透明度
-    "figure.dpi": 300,           #以此分辨率保存
-}
-plt.rcParams.update(config)
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman'],
+    'font.size': 12,              # 基础字号
+    'axes.labelsize': 12,         # 轴标签字号
+    'axes.titlesize': 12,         # 标题字号
+    'legend.fontsize': 11,        # 图例字号
+    'xtick.labelsize': 11,        # X轴刻度字号
+    'ytick.labelsize': 11,        # Y轴刻度字号
+    'axes.linewidth': 1.0,        # 轴线宽度
+    'grid.color': '#b0b0b0',      # 网格颜色
+    'grid.linestyle': '--',       # 网格线虚线
+    'grid.alpha': 0.6,
+    'grid.linewidth': 0.5,
+    'xtick.direction': 'in',      # 刻度向内
+    'ytick.direction': 'in',      # 刻度向内
+    'xtick.top': True,            # 上方显示刻度
+    'ytick.right': True,          # 右侧显示刻度
+    'figure.dpi': 300,            # 高分辨率
+    'lines.linewidth': 1.5,       # 线宽
+    'lines.markersize': 6         # 标记点大小
+})
 
 # --------------------------
-# 2. 数据准备 (更新为表格数据)
+# 2. 数据准备 (从 Log 提取)
 # --------------------------
 bucket_sizes = [1, 2, 4, 8, 16]
 
-# 更新为图片中的表格数据
-nmse_random =   [0.424979,  0.1790774, 0.0477455, 0.1024281, 0.1274655]
-nmse_temporal = [0.188075,  0.1832492, 0.1855076, 0.1850721, 0.2043378]
-nmse_freq =     [0.0870814, 0.1008942, 0.0811304, 0.0803556, 0.0831827]
-
-# 计算平均值
-data_matrix = np.array([nmse_random, nmse_temporal, nmse_freq])
-nmse_average = np.mean(data_matrix, axis=0)
-
-# --------------------------
-# 3. 绘图逻辑
-# --------------------------
-fig, ax = plt.subplots(figsize=(6, 6)) # 典型的单栏/半页宽度
-
-# --- A. 绘制各个方法的线 (背景参考) ---
-# IEEE风格通常用不同的 LineStyle 和 Marker 来区分，而不仅仅是颜色
-# Random: 蓝色圆圈
-ax.plot(bucket_sizes, nmse_random, 
-        marker='o', markersize=6, linestyle='-.', linewidth=1.2,
-        color='#1f77b4', alpha=0.6, label='Random-0.85')
-
-# Temporal: 红色方块
-ax.plot(bucket_sizes, nmse_temporal, 
-        marker='s', markersize=6, linestyle='--', linewidth=1.2,
-        color='#d62728', alpha=0.6, label='Temporal-0.5')
-
-# Freq: 绿色菱形
-ax.plot(bucket_sizes, nmse_freq, 
-        marker='D', markersize=6, linestyle=':', linewidth=1.2,
-        color='#2ca02c', alpha=0.6, label='Freq-0.5')
-
-# --- B. 绘制平均趋势线 (主角) ---
-# 颜色：使用深紫色 (#6A0DAD) 代替黑色，既显眼又不单调，打印清晰
-# 样式：实线，加粗，放在最上层 (zorder=10)
-ax.plot(bucket_sizes, nmse_average, 
-        marker='*', markersize=12, linestyle='-', linewidth=2.5,
-        color='#6A0DAD', label='Average Trend', zorder=10)
+# Log 数据 (Unit: dB)
+# Random Task
+nmse_random =   [-2.2949295, -6.6580005, -12.3381596, -9.5968924, -9.7561750]
+# Temporal Task
+nmse_temporal = [-7.6857634, -7.8764606, -7.9350448,  -7.9007101, -7.6667280]
+# Freq Task
+nmse_freq =     [-8.0977650, -7.7854638, -8.3796968,  -8.3352613, -8.2229939]
+# Overall Average
+nmse_average =  [-5.1575952, -7.4036522, -9.1546164,  -8.5532656, -8.4622364]
 
 # --------------------------
-# 4. 坐标轴与细节调整
+# 3. 样式定义 (您提供的样式字典)
+# --------------------------
+styles = {
+    'Global':      {'marker': 'o', 'color': '#0072BD', 'ls': '--',  'label': 'Global'},     
+    'Alternating': {'marker': '^', 'color': '#77AC30', 'ls': '-.', 'label': 'Alternating'}, 
+    'Proposed':    {'marker': 's', 'color': '#D95319', 'ls': '-',  'label': 'Proposed'}    
+}
+
+# --------------------------
+# 4. 绘图逻辑
+# --------------------------
+fig, ax = plt.subplots(figsize=(6, 5)) 
+
+# 定义数据与样式的映射关系
+# 这里假设：Random -> Global, Temporal -> Alternating, Freq -> Proposed
+# 如果您的论文中 "Proposed" 指的是 Average 或其他数据，请在这里交换变量
+plot_mappings = [
+    (nmse_random,   styles['Global']),
+    (nmse_temporal, styles['Alternating']),
+    (nmse_freq,     styles['Proposed'])
+]
+
+# 循环绘图
+for data, style in plot_mappings:
+    ax.plot(bucket_sizes, data, 
+            marker=style['marker'], 
+            color=style['color'], 
+            linestyle=style['ls'], 
+            label=style['label'])
+
+# (可选) 如果您也想画 Average 曲线，可以取消下面代码的注释，并分配一个样式
+# ax.plot(bucket_sizes, nmse_average, marker='*', color='k', linestyle='-', label='Average')
+
+# --------------------------
+# 5. 坐标轴与细节调整
 # --------------------------
 ax.set_xlabel('Number of Buckets')
-ax.set_ylabel('NMSE')  # 简化Y轴标签，或写 'Average NMSE'
+ax.set_ylabel('NMSE (dB)')  # 单位更新为 dB
 
-# --- 关键修改：使用对数坐标轴 ---
-# 因为 bucket 是 1, 2, 4, 8, 16 倍增的，对数轴能让间距相等，更符合逻辑
+# 设置 X 轴为 Log Base 2
 ax.set_xscale('log', base=2)
 ax.set_xticks(bucket_sizes)
-ax.get_xaxis().set_major_formatter(ScalarFormatter()) # 强制显示为 1, 2, 4 而不是 2^0, 2^1
+ax.get_xaxis().set_major_formatter(ScalarFormatter()) # 显示 1, 2, 4... 而非 2^0, 2^1...
 
-# 开启网格
-ax.grid(True, which='major', linestyle='--', alpha=0.5)
-
-# 图例设置 (IEEE 风格通常要求图例简洁)
-handles, labels = ax.get_legend_handles_labels()
-# 将 Average 放在第一个位置
-order = [3, 0, 1, 2] 
-ax.legend([handles[idx] for idx in order], [labels[idx] for idx in order], 
-          loc='best', edgecolor='black', fancybox=False, framealpha=1.0)
+# 网格与图例
+ax.grid(True)
+# 图例位置自适应，去除边框背景使其更简洁 (framealpha可调)
+ax.legend(loc='best', edgecolor='black', fancybox=False, framealpha=1.0)
 
 # --------------------------
-# 5. 保存与显示
+# 6. 保存与显示
 # --------------------------
-os.makedirs('results', exist_ok=True)
+output_dir = 'results'
+os.makedirs(output_dir, exist_ok=True)
 
 plt.tight_layout()
-# 保存为 PDF (矢量图，论文首选) 和 PNG
-plt.savefig('results/bucket_average_nmse_ieee.pdf', format='pdf', bbox_inches='tight')
-plt.savefig('results/bucket_average_nmse_ieee.png', dpi=300, bbox_inches='tight')
 
+# 保存为 PDF (论文首选) 和 PNG
+save_path_pdf = os.path.join(output_dir, 'nmse_db_comparison.pdf')
+save_path_png = os.path.join(output_dir, 'nmse_db_comparison.png')
+
+plt.savefig(save_path_pdf, format='pdf', bbox_inches='tight')
+plt.savefig(save_path_png, dpi=300, bbox_inches='tight')
+
+print(f"Figures saved to:\n{save_path_pdf}\n{save_path_png}")
 plt.show()

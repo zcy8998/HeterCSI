@@ -8,88 +8,110 @@ import numpy as np
 plt.rcParams.update({
     'font.family': 'serif',
     'font.serif': ['Times New Roman'],
-    'font.size': 12,              # 基础字号
-    'axes.labelsize': 14,         # 轴标签字号
-    'axes.titlesize': 14,         # 标题字号
-    'legend.fontsize': 12,        # 图例字号
-    'xtick.labelsize': 12,        # X轴刻度字号
-    'ytick.labelsize': 12,        # Y轴刻度字号
+    'font.size': 10,              # IEEE标准通常较小，10-12皆可
+    'axes.labelsize': 12,         # 轴标签
+    'axes.titlesize': 12,         # 标题
+    'legend.fontsize': 10,        # 图例
+    'xtick.labelsize': 10,        # X轴刻度
+    'ytick.labelsize': 10,        # Y轴刻度
     'axes.linewidth': 1.0,        # 轴线宽度
-    'grid.color': 'gray',
-    'grid.linestyle': ':',        # 网格线改为点线
-    'grid.alpha': 0.5,
-    'grid.linewidth': 0.5,
+    'grid.color': '#b0b0b0',      # 稍微深一点的灰色，打印更清晰
+    'grid.linestyle': ':',        # 网格线为点线
+    'grid.alpha': 0.6,
+    'grid.linewidth': 0.8,
     'xtick.direction': 'in',      # 刻度向内
     'ytick.direction': 'in',      # 刻度向内
     'xtick.top': True,            # 上方显示刻度
     'ytick.right': True,          # 右侧显示刻度
     'figure.dpi': 300,            # 高分辨率
-    'savefig.bbox': 'tight',      # 保存时去除白边
+    'savefig.bbox': 'tight',      # 去除白边
     'lines.linewidth': 1.5,       # 线宽
-    'lines.markersize': 8         # 标记点大小
+    'lines.markersize': 6         # 标记点大小适中
 })
 
 # --------------------------
-# 2. 数据录入
+# 2. 数据录入 (根据提供的 Overall Average NMSE)
 # --------------------------
 # X轴: Bucket sizes
 buckets = [1, 2, 4, 8, 16]
 
-# Y轴: Average values (High)
-high_data = [0.233, 0.154, 0.105, 0.123, 0.138]
+# Data: High Heterogeneity (Overall Average NMSE)
+# Values: -5.15..., -7.40..., -9.15..., -8.55..., -8.46...
+high_hetero_data = [
+    -5.1575952, 
+    -7.4036522, 
+    -9.1546164, 
+    -8.5532656, 
+    -8.4622364
+]
 
-# Y轴: Average values (Low)
-low_data  = [0.701, 0.646, 0.649, 0.649, 0.676]
+# Data: Low Heterogeneity (Overall Average NMSE)
+# Values: -2.42..., -2.72..., -2.59..., -2.59..., -2.44...
+low_hetero_data  = [
+    -2.4285100, 
+    -2.7215242, 
+    -2.5983577, 
+    -2.5961118, 
+    -2.4479625
+]
 
 # --------------------------
 # 3. 绘图逻辑
 # --------------------------
-fig, ax = plt.subplots(figsize=(7, 5)) # 典型的单栏/半页图尺寸
+# 尺寸建议：IEEE 单栏宽度约为 3.5英寸。
+# 设置为 (5, 3.8) 既能保证清晰度，插入文档时缩小也不会模糊。
+fig, ax = plt.subplots(figsize=(5, 3.8)) 
 
-# 绘制 High (蓝色, 圆点实线)
-ax.plot(buckets, high_data, 
-        marker='o',              # 圆点
-        linestyle='-',           # 实线
-        color='#1f77b4',         # 经典蓝
-        label='High', 
-        markeredgecolor='white', # 标记边缘白色，增加清晰度
-        markeredgewidth=1.0)
+# 绘制 High Heterogeneity (蓝色, 圆点, 实线)
+ax.plot(buckets, high_hetero_data, 
+        marker='o',              
+        linestyle='-',           
+        color='#0072BD',         # IEEE 常用深蓝
+        label='$\mathcal{H}_{CSI} = 57.20\%$', 
+        markeredgecolor='white', # 标记边缘白色，增加对比度
+        markeredgewidth=0.8,
+        zorder=3)                # 保证线在网格之上
 
-# 绘制 Low (红色, 方块虚线) - 使用虚线以区分不同类别
-ax.plot(buckets, low_data, 
-        marker='s',              # 方块
-        linestyle='--',          # 虚线
-        color='#d62728',         # 经典红
-        label='Low', 
+# 绘制 Low Heterogeneity (红色, 方块, 虚线)
+ax.plot(buckets, low_hetero_data, 
+        marker='s',              
+        linestyle='--',          
+        color='#D95319',         # IEEE 常用深红/橙红
+        label='$\mathcal{H}_{CSI} = 0\%$', 
         markeredgecolor='white',
-        markeredgewidth=1.0)
+        markeredgewidth=0.8,
+        zorder=3)
 
 # --------------------------
 # 4. 坐标轴与美化
 # --------------------------
-ax.set_xlabel('Bucket Size')
-ax.set_ylabel('Average Metric')  # 请根据实际含义修改，例如 "NMSE" 或 "Error Rate"
+ax.set_xlabel('Number of Buckets')
+ax.set_ylabel('NMSE (dB)')
 
-# 关键设置：X轴使用 Log2 刻度
-# 因为 bucket 是 1, 2, 4, 8, 16 (2的幂次)，线性坐标会挤在一起
-# Log坐标能让它们均匀分布
+# X轴设置: Log2 刻度
 ax.set_xscale('log', base=2)
 ax.set_xticks(buckets)
-ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter()) # 显示 "1", "2"... 而不是 "2^0"
+ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter()) 
 
-# Y轴范围设置 (根据数据范围留出一点余量)
-ax.set_ylim(0, 0.8) 
+# Y轴设置:
+# 数据范围约在 -10 到 -2 之间。设置一定的 margin 让图不顶格。
+# 为了美观，可以强制反转坐标轴（如果想表示越低越好，通常保持原样即可，NMSE通常是越低越好）
+# 这里保持数学上的直观性（负数在下）。
+ax.set_ylim(-10.5, -1.0) 
+ax.yaxis.set_major_locator(ticker.MultipleLocator(2)) # 每隔2dB一个刻度
 
 # 网格
 ax.grid(True, which='major', axis='both')
 
 # 图例
-ax.legend(loc='best', frameon=True, edgecolor='black', framealpha=1.0, fancybox=False)
+# frameon=True 加上边框，framealpha=1 不透明，避免遮挡网格混乱
+ax.legend(loc='lower left', frameon=True, edgecolor='black', framealpha=1.0, fancybox=False)
 
 # --------------------------
 # 5. 保存
 # --------------------------
 plt.tight_layout()
-plt.savefig('results/bucket_line_plot.png', dpi=300)
-plt.savefig('results/bucket_line_plot.pdf', format='pdf') # 推荐论文使用PDF
+# 建议同时保存为 PDF (矢量图，适合插入 LaTeX) 和 PNG (预览)
+plt.savefig('bucket_nmse_comparison.pdf', format='pdf') 
+plt.savefig('bucket_nmse_comparison.png', dpi=300)
 plt.show()

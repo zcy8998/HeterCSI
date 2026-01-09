@@ -81,6 +81,7 @@ def get_args_parser():
     parser.add_argument('--shuffle_type', default='global',
                         choices=['gloabl', 'bucket'],
                         help='Whether to use fmow rgb, sentinel, or other dataset.')
+    parser.add_argument('--bucket_num', default=4, type=int)
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default='./output_dir',
@@ -201,6 +202,14 @@ def main(args):
         print("Number of learnable parameter: %.5fM" % (total_learn / 1e6))
        
     if misc.is_main_process():
+
+        result_file = f"nmse_results_bucket_{args.bucket_num}_low.txt"
+        
+        # [新增] 初始化文件（写入标题，如果文件存在则覆盖）
+        with open(result_file, 'w') as f:
+            f.write(f"Evaluation Results for Bucket Num: {args.bucket_num}\n")
+            f.write("=" * 50 + "\n")
+
         # 初始化每个掩码类型的统计容器
         if args.mask_type == 'all':
             mask_list = {'random': 0.85, 'temporal': 0.5, 'freq': 0.5}
@@ -304,11 +313,22 @@ def main(args):
             print(f"Average NMSE (dB) for all datasets: {avg_nmse_db:.7f} dB")
             
             all_tasks_nmse_linear.append(avg_nmse_linear)
+
+            # [新增] 将当前 Task 的平均 dB 写入文件
+            with open(result_file, 'a') as f:
+                f.write(f"Task: {mask_type}, Avg NMSE (dB): {avg_nmse_db:.7f}\n")
         
         final_avg_linear_all_tasks = np.mean(all_tasks_nmse_linear)
+        final_avg_db_all_tasks = 10 * np.log10(np.clip(final_avg_linear_all_tasks, 1e-10, None))
         print("FINAL SUMMARY (All Tasks)")
         print(f"Total Tasks Evaluated: {len(all_tasks_nmse_linear)}")
         print(f"Overall Average NMSE (Linear): {final_avg_linear_all_tasks:.7f}")
+        print(f"Overall Average NMSE (dB): {final_avg_db_all_tasks:.7f}")
+
+        with open(result_file, 'a') as f:
+            f.write("-" * 50 + "\n")
+            f.write(f"Overall Average NMSE (dB) [All Tasks]: {final_avg_db_all_tasks:.7f}\n")
+
 
         # for task_idx, (mask_type, mask_ratio) in enumerate(mask_list.items()):
         #     nmse_list = []

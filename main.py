@@ -383,6 +383,22 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    if misc.is_main_process():
+        # 计算实际运行的 epoch 数量
+        num_trained_epochs = args.epochs - args.start_epoch
+        
+        if num_trained_epochs > 0:
+            # 计算平均每个 epoch 的秒数
+            avg_time_per_epoch_sec = total_training_time / num_trained_epochs
+            # 转换为分钟
+            avg_time_per_epoch_min = avg_time_per_epoch_sec / 60
+            
+            print("-" * 30)
+            print(f"Training finished.")
+            print(f"Total training time: {total_training_time/60:.2f} minutes")
+            print(f"Average training time per epoch: {avg_time_per_epoch_min:.4f} minutes")
+            print("-" * 30)
+
     if 'train_dataset' in locals():
         dataset_train.cleanup()
     
