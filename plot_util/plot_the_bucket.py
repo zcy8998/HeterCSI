@@ -8,12 +8,7 @@ import numpy as np
 plt.rcParams.update({
     'font.family': 'serif',
     'font.serif': ['Times New Roman'],
-    'font.size': 10,              # IEEE标准通常较小，10-12皆可
-    'axes.labelsize': 12,         # 轴标签
-    'axes.titlesize': 12,         # 标题
-    'legend.fontsize': 10,        # 图例
-    'xtick.labelsize': 10,        # X轴刻度
-    'ytick.labelsize': 10,        # Y轴刻度
+    'font.size': 16,              # IEEE标准通常较小，10-12皆可
     'axes.linewidth': 1.0,        # 轴线宽度
     'grid.color': '#b0b0b0',      # 稍微深一点的灰色，打印更清晰
     'grid.linestyle': ':',        # 网格线为点线
@@ -26,7 +21,7 @@ plt.rcParams.update({
     'figure.dpi': 300,            # 高分辨率
     'savefig.bbox': 'tight',      # 去除白边
     'lines.linewidth': 1.5,       # 线宽
-    'lines.markersize': 6         # 标记点大小适中
+    'lines.markersize': 7         # 标记点大小适中
 })
 
 # --------------------------
@@ -60,7 +55,7 @@ low_hetero_data  = [
 # --------------------------
 # 尺寸建议：IEEE 单栏宽度约为 3.5英寸。
 # 设置为 (5, 3.8) 既能保证清晰度，插入文档时缩小也不会模糊。
-fig, ax = plt.subplots(figsize=(5, 3.8)) 
+fig, ax = plt.subplots(figsize=(7, 6)) 
 
 # 绘制 High Heterogeneity (蓝色, 圆点, 实线)
 ax.plot(buckets, high_hetero_data, 
