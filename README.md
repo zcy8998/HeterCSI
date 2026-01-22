@@ -5,6 +5,12 @@
 ## Abstract
 Wireless foundation models promise transformative capabilities for channel state information (CSI) processing across diverse 6G network applications, yet face fundamental challenges due to the inherent dual heterogeneity of CSI across both scale and scenario dimensions. However, current pretraining approaches either constrain inputs to fixed dimensions or isolate training by scale, limiting the generalization and scalability of wireless foundation models. In this paper, we propose \textbf{HeterCSI}, a channel-adaptive pretraining framework that reconciles training efficiency with robust cross-scenario generalization via  a new understanding of gradient dynamics in heterogeneous CSI pretraining. Our key insight reveals that CSI scale heterogeneity primarily causes destructive gradient interference, while scenario diversity actually promotes constructive gradient alignment when properly managed. Specifically, we formulate heterogeneous CSI batch construction as a partitioning optimization problem that minimizes zero-padding overhead while preserving scenario diversity. To solve this, we develop a scale-aware adaptive batching strategy that aligns CSI samples of similar  scales, and design a double-masking mechanism to isolate valid signals from padding artifacts. Extensive experiments on 12 unseen scenarios demonstrate that HeterCSI establishes a generalized foundation model without scenario-specific finetuning. It reduces the average normalized mean squared error (NMSE) by 2.13 dB, 4.02 dB, and 5.65 dB for reconstruction, time-domain prediction, and frequency-domain prediction, respectively. The proposed method also reduces training latency by 53\% compared to exisiting approaches while improving generalization performance by 1.53 dB on average.
 
+## Preparation
+Install Python dependencies by running:
+```shell
+pip install -r requirements.txt
+```
+
 ### Pretrain Dataset
 
 ### Pretraining
