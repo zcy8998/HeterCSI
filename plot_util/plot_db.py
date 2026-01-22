@@ -7,12 +7,12 @@ import matplotlib.pyplot as plt
 plt.rcParams.update({
     'font.family': 'serif',
     'font.serif': ['Times New Roman'],
-    'font.size': 12,              # 基础字号
-    'axes.labelsize': 12,         # 轴标签字号
-    'axes.titlesize': 12,         # 标题字号
-    'legend.fontsize': 11,        # 图例字号
-    'xtick.labelsize': 11,        # X轴刻度字号
-    'ytick.labelsize': 11,        # Y轴刻度字号
+    'font.size': 14,              # 基础字号
+    'axes.labelsize': 14,         # 轴标签字号
+    'axes.titlesize': 14,         # 标题字号
+    'legend.fontsize': 14,        # 图例字号
+    'xtick.labelsize': 14,        # X轴刻度字号
+    'ytick.labelsize': 14,        # Y轴刻度字号
     'axes.linewidth': 1.0,        # 轴线宽度
     'grid.color': '#b0b0b0',      # 网格颜色略深一点，保证可见性
     'grid.linestyle': '--',       # 网格线改为虚线
@@ -38,7 +38,8 @@ x_axis = [8, 16, 24, 32, 40]
 data_random = {
     'Global':      [-5.8, -7.14, -7.51, -6.68, -12.15],
     'Proposed':    [-6.17, -7.17, -7.73, -8.47, -14.74],
-    'Alternating': [-6.17, -7.06, -7.28, -8.39, -10.23]
+    'Alternating': [-6.17, -7.06, -7.28, -8.39, -10.23],
+    'Sequential': [-1.38, -2.33, -3.42, -3.37, -2.27]
 }
 
 # Task 2: Temporal-0.5
@@ -46,7 +47,8 @@ data_random = {
 data_temporal = {
     'Global':      [-4.1, -4.49, -4.47, -5.18, -7.19],
     'Proposed':    [-4.16, -4.98, -5.20, -5.45, -8.68],
-    'Alternating': [-4.03, -4.68, -4.65, -5.14, -8.06]
+    'Alternating': [-4.03, -4.68, -4.65, -5.14, -8.06],
+    'Sequential': [-1.06, -1.33, -2.46, -2.24, -1.3]
 }
 
 # Task 3: Freq-0.5
@@ -54,7 +56,8 @@ data_temporal = {
 data_freq = {
     'Global':      [-4.13, -4.93, -4.84, -4.87, -9.17],
     'Proposed':    [-4.23, -4.99, -5.08, -5.08, -9.34],
-    'Alternating': [-4.19, -4.92, -4.70, -4.89, -8.40]
+    'Alternating': [-4.19, -4.92, -4.70, -4.89, -8.40],
+    'Sequential': [-1.49, -1.96, -2.71, -2.42, -3.57]
 }
 
 all_tasks = [
@@ -76,7 +79,8 @@ fig, axes = plt.subplots(1, 3, figsize=(14, 5))
 styles = {
     'Global':      {'marker': 'o', 'color': '#0072BD', 'ls': '--',  'label': 'Global'},     
     'Alternating': {'marker': '^', 'color': '#77AC30', 'ls': '-.', 'label': 'Alternating'}, 
-    'Proposed':    {'marker': 's', 'color': '#D95319', 'ls': '-',  'label': 'Proposed'}    
+    'Proposed':    {'marker': 's', 'color': '#D95319', 'ls': '-',  'label': 'Proposed'},
+    'Sequential':  {'marker': 'D', 'color': '#7E2F8E', 'ls': ':',  'label': 'Sequential'}   
 }
 
 for ax, (task_name, task_data) in zip(axes, all_tasks):
@@ -126,7 +130,7 @@ handles, labels = axes[0].get_legend_handles_labels()
 fig.legend(handles, labels, 
            loc='upper center', 
            bbox_to_anchor=(0.5, 1.0), # 放在画布最上方
-           ncol=3,                     # 横向排列
+           ncol=4,                     # 横向排列
            frameon=False,              # 无边框图例
            columnspacing=2.0)          # 图例间距
 

@@ -42,12 +42,12 @@ plt.rcParams.update({
 })
 
 # ================= 用户配置区域 (User Config) =================
-RESULTS_ROOT = "results"     # 根目录
+RESULTS_ROOT = "/home/zhangchenyu/experiments/cross_csi/results"     # 根目录
 OUTPUT_DIR = "results"     # 图片输出目录
 
 # 定义需要对比的配对：(数据集A, 任务A, 数据集B, 任务B)
 COMPARISON_CONFIG = [
-    ("D1", "temporal_16batch", "D40", "temporal_16batch"),
+    ("D1", "temporal_16", "D101", "temporal_16"),
     # ("D1", "temporal", "D1", "freq"), 
 ]
 
@@ -229,7 +229,7 @@ def plot_histogram(data, title, out_path, stats):
 
     ax.set_xlabel("Cosine Similarity")
     ax.set_ylabel("Frequency")
-    # ax.set_title(title)
+    ax.set_title(title)
     
     ax.axvline(0.0, color='k', linestyle='--', linewidth=0.8, alpha=0.5)
 
@@ -250,6 +250,7 @@ def plot_histogram(data, title, out_path, stats):
     
     print(f"  -> Saving plot to {out_path}")
     plt.savefig(out_path, format='pdf', bbox_inches='tight')
+    # plt.savefig(out_path, format='eps', bbox_inches='tight')
     plt.close()
 
 def main():
@@ -263,7 +264,7 @@ def main():
         base_name = f"{d1}_{t1}__vs__{d2}_{t2}"
         csv_path = out_dir / f"{base_name}.csv"
         pdf_path = out_dir / f"{base_name}.pdf"
-        title = f"{d1} ({t1}) vs {d2} ({t2})"
+        title = f"Different Scale, Same Scenario"
 
         # 1. 检查是否存在 CSV 缓存
         if csv_path.exists():

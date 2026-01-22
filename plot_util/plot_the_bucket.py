@@ -62,7 +62,7 @@ ax.plot(buckets, high_hetero_data,
         marker='o',              
         linestyle='-',           
         color='#0072BD',         # IEEE 常用深蓝
-        label='$\mathcal{H}_{CSI} = 57.20\%$', 
+        label='High Heterogeneity', 
         markeredgecolor='white', # 标记边缘白色，增加对比度
         markeredgewidth=0.8,
         zorder=3)                # 保证线在网格之上
@@ -72,7 +72,7 @@ ax.plot(buckets, low_hetero_data,
         marker='s',              
         linestyle='--',          
         color='#D95319',         # IEEE 常用深红/橙红
-        label='$\mathcal{H}_{CSI} = 0\%$', 
+        label='Low Heterogeneity', 
         markeredgecolor='white',
         markeredgewidth=0.8,
         zorder=3)

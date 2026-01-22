@@ -23,7 +23,7 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
 
-import CSIGPT.models.heter_csi as heter_csi
+import models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import *
@@ -111,7 +111,7 @@ def get_args_parser():
                         help='max seq len after patching')
     parser.add_argument('--data_dir', default=None, type=str,
                         help='the data dir used to train')
-    parser.add_argument('--data_num', default=None, type=int,
+    parser.add_argument('--data_num', default=1.0, type=float,
                         help='the amount of data used to finetune')
 
     return parser
@@ -255,7 +255,7 @@ def main(args):
             f.write("epoch,mask_type,avg_nmse\n") 
 
     # grad_saver = GradientSaver(save_root="/data/zcy_new/cross_csi/results")
-    grad_saver = GradientSaver(save_root="/data/zcy_new/cross_csi/results")
+    grad_saver = GradientSaver(save_root="/home/zhangchenyu/experiments/cross_csi/results")
     checkpoints = [os.path.join(args.resume, f"checkpoint-{i}.pth") for i in range(args.epochs+1)]
 
     for epoch, resume_path in enumerate(checkpoints):

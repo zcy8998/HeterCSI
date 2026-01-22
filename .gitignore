@@ -25,8 +25,6 @@ test_data/
 output_dir/
 results/
 .experiments/
-downstream_tasks/
-data_generation/
 
 # --- Scripts (注意：通常建议保留脚本版本控制，除非包含敏感信息) ---
 *.sh

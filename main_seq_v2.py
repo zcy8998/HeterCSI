@@ -3,7 +3,6 @@
 # MAE: https://github.com/facebookresearch/mae
 # DeiT: https://github.com/facebookresearch/deit
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# SpectralGPT: https://github.com/danfenghong/IEEE_TPAMI_SpectralGPT
 # --------------------------------------------------------
 import argparse
 import datetime
@@ -13,6 +12,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import uuid
 
 pdb.set_trace = lambda *args, **kwargs: None
 
@@ -23,8 +23,7 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
 
-import HeterCSI.models.heter_csi as heter_csi
-import HeterCSI.models.heter_csi_moe as CrossCSI_MOE
+import models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask, train_one_epoch_csi
@@ -74,9 +73,6 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--train_path', default='', type=str,
                         help='Train.csv path')
-    parser.add_argument('--shuffle_type', default='global',
-                        choices=['global', 'bucket', 'group'],
-                        help='Whether to use fmow rgb, sentinel, or other dataset.')
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default='./output_dir',
@@ -111,11 +107,10 @@ def get_args_parser():
                         help='max seq len after patching')
     parser.add_argument('--data_dir', default=None, type=str,
                         help='the data dir used to train')
-    parser.add_argument('--data_num', default=1, type=float,
+    parser.add_argument('--data_num', default=1.0, type=float,
                         help='the amount of data used to finetune')
 
     return parser
-
 
 def main(args):
     misc.init_distributed_mode(args)
@@ -128,24 +123,49 @@ def main(args):
     device = torch.device(args.gpu)
     # device = torch.device("cpu")
 
+    # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     cudnn.benchmark = True
 
+    num_tasks = misc.get_world_size()
     global_rank = misc.get_rank()
+    data_loaders = []
+    for dataset_name in args.dataset.split(','):
+        mmap_name = args.mask_type + '_seq_' + dataset_name + str(len(args.dataset))
+        print(f"Processing {dataset_name} for train")
+        dataset_train = CSIDataset_mmap_nopad(dataset=dataset_name, world_size=misc.get_world_size(),
+                                rank=misc.get_rank(), dataset_type='train', mmap_version=mmap_name, data_dir=args.data_dir)
+        sampler_train = torch.utils.data.DistributedSampler(
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        data_loader_train = torch.utils.data.DataLoader(
+            dataset_train,
+            shuffle=False, sampler=sampler_train,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=True,
+        )
+        data_loaders.append(data_loader_train)
+    if global_rank == 0 and args.log_dir is not None:
+        os.makedirs(args.log_dir, exist_ok=True)
+        log_writer = SummaryWriter(log_dir=args.log_dir)
+    else:
+        log_writer = None
 
     if global_rank == 0:
-        data_loader_train = data_load_main(args, dataset_type='train', test_type='normal') # 加载数据
         dataset_val_all = data_load_main(args, dataset_type='val', test_type='normal') # 加载数据
 
     model = heter_csi.__dict__[args.model](
         cls_embed=args.cls_token,
         device=device
     )
-    
+
     model.to(device)
+
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
 
@@ -172,48 +192,57 @@ def main(args):
 
     if args.resume:
         print("Start finetune, resume from checkpoint: %s" % args.resume)
-        misc.load_model_only(args=args, model_without_ddp=model_without_ddp)
+        misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
     if global_rank == 0:
         total = sum([param.nelement() for param in model.parameters()])
         print("Number of parameter: %.5fM" % (total / 1e6))
         total_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print("Number of learnable parameter: %.5fM" % (total_learn / 1e6))
-        
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    total_training_time = 0.0 
 
     if misc.is_main_process() and args.output_dir:
-        results_file = os.path.join(args.output_dir, f"nmse_results_{args.mask_type}_{args.shuffle_type}.csv")
+        results_file = os.path.join(args.output_dir, f"nmse_results_{args.mask_type}_seq.csv")
+        time_results_file = os.path.join(args.output_dir, f"nmse_results_pure_time_{args.mask_type}_seq.csv") 
         if args.resume:
             results_file += "_finuetune"
         with open(results_file, "w") as f:
             f.write("epoch,mask_type,avg_nmse\n") 
+        with open(time_results_file, "w") as f:
+            f.write("train_time,mask_type,avg_nmse\n")
 
-    for epoch in range(args.start_epoch, args.epochs):
-        epoch_start_time = time.time()
-        if args.mask_type == 'all':
-            train_one_epoch_3mask(
-                model, data_loader_train[0],
-                optimizer, device, epoch, loss_scaler,
-                log_writer=None,
-                args=args
-            )
-        else:
-            train_one_epoch_csi(
-                model, data_loader_train[0],
-                optimizer, device, epoch, loss_scaler,
-                log_writer=None,
-                args=args
-            )
-        epoch_end_time = time.time()
-        epoch_total_time_str = str(datetime.timedelta(seconds=int(epoch_end_time - epoch_start_time)))
-        print(f"Epoch {epoch}, time consume {epoch_total_time_str}")
+    for idx, data_loader in enumerate(data_loaders, 1):
+        dataset_start_time = time.time()
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                data_loader.sampler.set_epoch(epoch)
 
-        if args.output_dir and (epoch % 1 == 0 or epoch + 1 == args.epochs):
+            if args.mask_type == 'all':
+                train_one_epoch_3mask(
+                    model, data_loader,
+                    optimizer, device, epoch, loss_scaler,
+                    log_writer=log_writer,
+                    args=args
+                )
+            else:
+                train_one_epoch_csi(
+                    model, data_loader,
+                    optimizer, device, epoch, loss_scaler,
+                    log_writer=log_writer,
+                    args=args
+                )
+        dataset_end_time = time.time()
+        dataset_duration = dataset_end_time - dataset_start_time
+        total_training_time += dataset_duration
+        epoch_total_time_str = str(datetime.timedelta(seconds=int(dataset_end_time - dataset_start_time)))
+        print(f"Dataset {idx}, time consume {epoch_total_time_str}")
+
+        if args.output_dir:
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
+                loss_scaler=loss_scaler, epoch=epoch, filename=f'checkpoint_D{idx}.pth')
 
         if args.output_dir and misc.is_main_process():
             if args.mask_type == 'all':
@@ -268,11 +297,30 @@ def main(args):
                 with open(results_file, "a") as f:
                     f.write(f"{epoch},{mask_type},{avg_nmse:.7f}\n")
                 
+                with open(time_results_file, "a") as f:
+                    # 这里的 total_training_time_min 是截止到当前 Epoch 训练结束时的纯训练累计时间
+                    f.write(f"{total_training_time:.4f},{mask_type},{avg_nmse:.7f}\n")
+                
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    if misc.is_main_process():
+        # 计算实际运行的 epoch 数量
+        num_trained_epochs = args.epochs - args.start_epoch
+        
+        if num_trained_epochs > 0:
+            # 计算平均每个 epoch 的秒数
+            avg_time_per_epoch_sec = total_training_time / num_trained_epochs
+            # 转换为分钟
+            avg_time_per_epoch_min = avg_time_per_epoch_sec / 60
+            
+            print("-" * 30)
+            print(f"Training finished.")
+            print(f"Total training time: {total_training_time/60:.2f} minutes")
+            print(f"Average training time per epoch: {avg_time_per_epoch_min:.4f} minutes")
+            print("-" * 30)
 
 if __name__ == '__main__':
     args = get_args_parser()

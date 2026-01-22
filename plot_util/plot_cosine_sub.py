@@ -46,8 +46,8 @@ FIGURE_CONFIGS = [
             # 1. Top Plot
             ("D1", "temporal_16batch", "D40", "temporal_16batch", "Top: D1 vs D40"),
             
-            # 2. Middle Plot
-            ("D1", "temporal_16batch", "D100", "temporal_16", "Mid: D1 vs D100"),
+            # # 2. Middle Plot
+            # ("D1", "temporal_16batch", "D100", "temporal_16", "Mid: D1 vs D100"),
 
             # 3. Bottom Plot
             ("D1", "temporal_16batch", "D5", "temporal_16", "Bot: D1 vs D5")
@@ -303,6 +303,7 @@ def plot_multi_histograms(subplot_data_list, out_path):
     plt.tight_layout()
     print(f"  -> Saving multi-plot to {out_path}")
     plt.savefig(out_path, format='pdf', bbox_inches='tight')
+    plt.savefig(out_path, format='eps', bbox_inches='tight')
     plt.close()
 
 # ================= Main =================

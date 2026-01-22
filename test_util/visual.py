@@ -22,7 +22,7 @@ import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
-import CSIGPT.models.heter_csi as heter_csi
+import HeterCSI.models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask
