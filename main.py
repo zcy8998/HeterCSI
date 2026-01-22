@@ -232,11 +232,6 @@ def main(args):
             cls_embed=args.cls_token,
             device=device
         )
-    elif args.model_type == 'moe':    
-        model = heter_csi_moe.__dict__[args.model](
-        cls_embed=args.cls_token,
-        device=device
-    )   
  
     model.to(device)
     model_without_ddp = model
