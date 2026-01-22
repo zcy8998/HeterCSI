@@ -632,7 +632,6 @@ def mae_vit_csi(**kwargs):
     return model
 
 
-
 if __name__ == '__main__':
     input = torch.rand(2, 12, 128, 128)
     model = mae_vit_base_patch8_csi()

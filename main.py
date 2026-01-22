@@ -25,7 +25,6 @@ from torch.autograd import Variable
 from torch.utils.tensorboard import SummaryWriter
 
 import models.heter_csi as heter_csi
-import models.heter_csi_moe as heter_csi_moe
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
 from engine_pretrain import train_one_epoch_3mask, train_one_epoch_csi
@@ -225,7 +224,7 @@ def main(args):
         log_writer = None
 
     if global_rank == 0:
-        dataset_val_all = data_load_main(args, dataset_type='val', test_type='normal') # 加载数据
+        dataset_val_all = data_load_main(args, dataset_type='val', test_type='normal') # Load data
 
     model = None
     if args.model_type == 'normal':
@@ -281,7 +280,7 @@ def main(args):
 
     if misc.is_main_process() and args.output_dir:
         results_file = os.path.join(args.output_dir, f"nmse_results_{args.mask_type}_{args.shuffle_type}.csv")
-        time_results_file = os.path.join(args.output_dir, f"nmse_results_pure_time_{args.mask_type}_{args.shuffle_type}.csv") # 改个名区分一下
+        time_results_file = os.path.join(args.output_dir, f"nmse_results_pure_time_{args.mask_type}_{args.shuffle_type}.csv") # Rename to distinguish
         if args.resume:
             results_file += "_finuetune"
         with open(results_file, "w") as f:
@@ -331,7 +330,7 @@ def main(args):
             model.eval()
             for task_idx, (mask_type, mask_ratio) in enumerate(mask_list.items()):
                 nmse_list = []
-                # 初始化任务统计量
+                # Initialize task statistics
                 for index, dataset_test in enumerate(dataset_val_all):
                     dataset_name = dataset_test.dataset.get_dataset_name()
                     print(f"Start test {dataset_name}.")
@@ -354,7 +353,7 @@ def main(args):
                             mask_nmse = bool_mask & mask_in_length
 
                             N = pred.shape[0]
-                            y_pred = pred[mask_nmse==1].reshape(-1,1).reshape(N,-1).detach().cpu().numpy()  # [Batch_size, 样本点数目]
+                            y_pred = pred[mask_nmse==1].reshape(-1,1).reshape(N,-1).detach().cpu().numpy()  # [Batch_size, number of sample points]
                             y_target = samples[mask_nmse==1].reshape(-1,1).reshape(N,-1).detach().cpu().numpy()
 
                             error_nmse += np.sum(np.mean(np.abs(y_target - y_pred) ** 2, axis=1) / np.mean(np.abs(y_target) ** 2, axis=1))
@@ -376,7 +375,7 @@ def main(args):
                     f.write(f"{epoch},{mask_type},{avg_nmse:.7f}\n")
                 
                 with open(time_results_file, "a") as f:
-                    # 这里的 total_training_time_min 是截止到当前 Epoch 训练结束时的纯训练累计时间
+                    # Here total_training_time_min is the cumulative pure training time up to the end of the current Epoch
                     f.write(f"{total_training_time:.4f},{mask_type},{avg_nmse:.7f}\n")
 
     total_time = time.time() - start_time
@@ -384,13 +383,13 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
     if misc.is_main_process():
-        # 计算实际运行的 epoch 数量
+        # Calculate the actual number of epochs run
         num_trained_epochs = args.epochs - args.start_epoch
         
         if num_trained_epochs > 0:
-            # 计算平均每个 epoch 的秒数
+            # Calculate average seconds per epoch
             avg_time_per_epoch_sec = total_training_time / num_trained_epochs
-            # 转换为分钟
+            # Convert to minutes
             avg_time_per_epoch_min = avg_time_per_epoch_sec / 60
             
             print("-" * 30)
@@ -402,7 +401,7 @@ def main(args):
     if 'train_dataset' in locals():
         dataset_train.cleanup()
     
-    # 销毁分布式组
+    # Destroy distributed process group
     if dist.is_initialized():
         dist.destroy_process_group()
 
