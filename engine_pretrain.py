@@ -14,7 +14,6 @@ import torch
 import util.lr_sched as lr_sched
 import util.misc as misc
 
-# import wandb
 
 def train_one_epoch(model: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -359,89 +358,3 @@ def train_one_epoch_save_grads(model,
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-
-def train_one_epoch_save_grads_v2(model,
-                                  data_loader,
-                                  optimizer,
-                                  device,
-                                  epoch, 
-                                  args=None,
-                                  grad_saver=None,
-                                  dataset_name=None,
-                                  max_saved_batches=10,
-                                  collect_only=True,
-                                  is_norm=True):
-    model.train()
-    optimizer.zero_grad()
-
-    # sampling indices: deterministic if args.seed exists
-    n_batches = len(data_loader) if hasattr(data_loader, "__len__") else None
-    if n_batches and n_batches > 0:
-        n_to_sample = min(max_saved_batches, n_batches)
-        rnd = random.Random(getattr(args, "seed", None) + epoch)
-        sample_indices = set(rnd.sample(range(n_batches), n_to_sample))
-    else:
-        sample_indices = None
-
-    saved_count = 0
-    global_step = 0
-    accum_iter = getattr(args, "accum_iter", 1)
-    for data_iter_step, batch in enumerate(data_loader):
-        # unpack batch (兼容多种 dataloader 返回格式)
-        if isinstance(batch, (list, tuple)):
-            samples = batch[0]
-            token_length = batch[1] if len(batch) > 1 else None
-            input_size = batch[2] if len(batch) > 2 else None
-        else:
-            samples = batch
-            token_length = None
-            input_size = None
-
-        samples = samples.to(device, non_blocking=True)
-        if token_length is not None:
-            token_length = token_length.to(device, non_blocking=True)
-
-        # 是否采样当前 batch
-        do_sample = False
-        if sample_indices is not None:
-            if data_iter_step in sample_indices and saved_count < max_saved_batches:
-                do_sample = True
-        else:
-            if saved_count < max_saved_batches:
-                p = (max_saved_batches - saved_count) / max(1, 1000)
-                if random.random() < p:
-                    do_sample = True
-
-        outputs = model(samples, token_length=token_length, input_size=input_size, mask_ratio=args.mask_ratio, 
-                        mask_strategy=args.mask_type) if token_length is not None else model(samples)
-
-        loss = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
-
-        if do_sample:
-            optimizer.zero_grad()
-            (loss / accum_iter).backward()
-
-            # flatten & normalize grad vector
-            if grad_saver is not None and dataset_name is not None:
-                try:
-                    grad_saver.save_from_model(model, dataset_name, epoch, global_step, is_norm=is_norm, 
-                                               task=args.mask_type, batch_size=args.batch_size)
-                except Exception as e:
-                    print(f"[GradientSaver] failed to save at step {global_step}: {e}")
-
-            optimizer.zero_grad()
-            saved_count += 1
-            print(f"Save {data_iter_step}, Current total is {saved_count}.")
-
-            if collect_only and saved_count >= max_saved_batches:
-                print(f"Collected {saved_count} gradients at identical w; exiting early (collect_only=True).")
-                return 
-
-        global_step += 1
-
-        # optional debug stop
-        if getattr(args, "debug_max_batches", None) is not None and global_step >= int(args.debug_max_batches):
-            break
-
-    print(f"Finished epoch {epoch}. Collected {saved_count} gradients.")
-    return

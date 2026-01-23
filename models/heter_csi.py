@@ -175,231 +175,199 @@ class MaskedAutoencoderCSI(nn.Module):
         imgs = x.reshape(shape=(N, 1, T, H, W))
         return imgs
 
-    # def random_masking(self, x, mask_ratio):
-    #     """
-    #     Perform per-sample random masking by per-sample shuffling.
-    #     Per-sample shuffling is done by argsort random noise.
-    #     x: [N, L, D], sequence
-    #     """
-    #     N, L, D = x.shape  # batch, length, dim
-    #     # pdb.set_trace()
-    #     len_keep = int(L * (1 - mask_ratio))
-
-    #     noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
-
-    #     # sort noise for each sample
-    #     ids_shuffle = torch.argsort(
-    #         noise, dim=1
-    #     )  # ascend: small is keep, large is remove
-    #     ids_restore = torch.argsort(ids_shuffle, dim=1)
-
-    #     # keep the first subset
-    #     ids_keep = ids_shuffle[:, :len_keep]
-    #     x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-
-    #     # generate the binary mask: 0 is keep, 1 is remove
-    #     mask = torch.ones([N, L], device=x.device)
-    #     mask[:, :len_keep] = 0
-    #     # unshuffle to get the binary mask
-    #     mask = torch.gather(mask, dim=1, index=ids_restore)
-
-    #     return x_masked, mask, ids_restore, ids_keep
-
     def random_masking(self, x, mask_ratio, token_length):
         """
-        修正版：只在有效长度内进行随机 Masking，
-        并将 Padding 区域强制视为 'masked' (不输入 Encoder)，
-        同时确保 Loss 计算时能区分它们。
+        Revised version: Perform random masking only within the effective length,
+        force Padding areas to be considered 'masked' (not input to Encoder),
+        and ensure Loss calculation distinguishes them.
         """
         N, L, D = x.shape
         
-        # 1. 生成随机噪声
+        # 1. Generate random noise
         noise = torch.rand(N, L, device=x.device)
         
-        # 2. 处理变长序列的逻辑
-        # 创建一个 mask 标识哪些位置是 padding
+        # 2. Logic for variable-length sequences
+        # Create a mask to identify which positions are padding
         col_indices = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L)
-        pad_mask = col_indices >= token_length.unsqueeze(1) # True 为 Padding
+        pad_mask = col_indices >= token_length.unsqueeze(1) # True means Padding
         
-        # 3. 重要：将 Padding 位置的噪声设为无限大
-        # 这样在 argsort 时，Padding 永远会被排在最后（即被视为 "要被移除/Mask" 的部分）
+        # 3. Important: Set noise at padding positions to infinity
+        # This ensures that during argsort, Padding is always sorted to the end (treated as "to be removed/masked")
         noise[pad_mask] = 1e9
         
-        # 4. 排序
-        # ids_shuffle: 小噪声在前 (Keep)，大噪声在后 (Masked + Padding)
+        # 4. Sort
+        # ids_shuffle: Small noise at front (Keep), large noise at back (Masked + Padding)
         ids_shuffle = torch.argsort(noise, dim=1)
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # 5. 计算每个样本应该保留多少个 Token (基于各自的 token_length)
-        # len_keep 不再是一个标量，而是一个 (N,) 的向量
+        # 5. Calculate how many tokens to keep for each sample (based on individual token_length)
+        # len_keep is no longer a scalar, but a vector of shape (N,)
         len_keep = (token_length * (1 - mask_ratio)).long()
         
-        # 6. 生成二值 mask (0: keep, 1: remove)
+        # 6. Generate binary mask (0: keep, 1: remove)
         mask = torch.ones([N, L], device=x.device)
-        # 由于 len_keep 是变长的，无法直接切片 mask[:, :len_keep] = 0
-        # 需要用掩码赋值
+        # Since len_keep is variable, we cannot simply slice like mask[:, :len_keep] = 0
+        # Need to assign using masks
         row_indices = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L)
-        # 排序后的索引中小于 len_keep 的位置设为 0 (Keep)
-        # 注意：这里比较的是排序后的顺序索引，即 "前 len_keep 个"
+        # Positions in the sorted indices smaller than len_keep are set to 0 (Keep)
+        # Note: Comparison is against sorted order indices, i.e., "the first len_keep elements"
         keep_mask_sorted = row_indices < len_keep.unsqueeze(1) 
         
-        # 将排序后的 mask 还原回原始顺序比较麻烦，
-        # 更简单的方法是直接提取 x_masked
+        # Restoring sorted mask to original order is tricky,
+        # It is simpler to directly extract x_masked
         
-        # --- 提取 x_masked (比较 tricky 因为长度不一) ---
-        # 为了支持 batch 处理，通常我们还是得对齐到一个最大保留长度，或者允许 Encoder 接收 Padding
-        # 这里为了兼容你现有的 Transformer 结构，建议取最大的 len_keep
+        # --- Extract x_masked (tricky due to variable lengths) ---
+        # To support batch processing, we usually align to a maximum kept length or allow Encoder to receive Padding
+        # Here, to be compatible with existing Transformer structure, we take the maximum len_keep
         max_len_keep = len_keep.max().item()
         
-        # 取出前 max_len_keep 个索引
+        # Extract the first max_len_keep indices
         ids_keep = ids_shuffle[:, :max_len_keep]
         
-        # 收集数据
+        # Gather data
         x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
         
-        # 如果某些样本的 len_keep 小于 max_len_keep，需要把多出来的部分 mask 掉 (设为0)
-        # 这些位置虽然被 gather 进来了，但其实应该是 padding
+        # If len_keep of some samples is smaller than max_len_keep, the excess part needs to be masked (set to 0)
+        # These positions were gathered but are actually padding
         valid_keep_mask = torch.arange(max_len_keep, device=x.device).unsqueeze(0) < len_keep.unsqueeze(1)
         x_masked = x_masked * valid_keep_mask.unsqueeze(-1).type_as(x_masked)
         
-        # --- 生成最终用于 loss 的 mask ---
-        # 还原 mask 顺序
-        # 在 sorted 域中，前 len_keep 是 0 (Keep)，后面是 1 (Mask)
+        # --- Generate final mask for loss ---
+        # Restore mask order
+        # In sorted domain, first len_keep is 0 (Keep), rest is 1 (Mask)
         mask_sorted = (~keep_mask_sorted).float()
-        # 还原顺序
+        # Restore order
         mask = torch.gather(mask_sorted, dim=1, index=ids_restore)
         
         return x_masked, mask, ids_restore, ids_keep
     
     def temporal_masking(self, x, input_size, mask_ratio=0.5):
         """
-        向量化的时序掩码处理，模拟随机掩码效果但实际保留连续时间段
+        Vectorized temporal masking, simulating random masking but retaining continuous time segments.
         Parameters:
-            x: 输入数据，(B, max_length, D)
-            input_size: 每个样本的[时间, 频率, 天线]维度，(B, 3)
-            mask_ratio: 掩码比例，默认0.5
+            x: Input data, (B, max_length, D)
+            input_size: [Time, Frequency, Antenna] dimensions for each sample, (B, 3)
+            mask_ratio: Masking ratio, default 0.5
         Returns:
-            x_masked: 掩码后数据，(B, L_keep_max, D)
-            mask: 掩码矩阵，(B, max_length)
-            ids_restore: 原始索引，(B, max_length)
-            ids_keep: 保留位置的索引，(B, L_keep_max)
+            x_masked: Masked data, (B, L_keep_max, D)
+            mask: Mask matrix, (B, max_length)
+            ids_restore: Original indices, (B, max_length)
+            ids_keep: Indices of kept positions, (B, L_keep_max)
         """
         pdb.set_trace()
         B, max_length, D = x.shape
         device = x.device
         t, k, u = input_size
-        # t, k, u = torch.unbind(input_size, dim=1)
         t = t.to(device)
         k = k.to(device)
         u = u.to(device)
-        tb, kb, ub = t // 4, k // 4, u // 4         # 分块处理(假设4x4块)
-        patches_per_t = kb * ub                     # 每时间块的块数 (B,)
-        t_keep = (tb * (1 - mask_ratio)).long()     # 需保留的时间块数 (B,)
-        L_keep_sample = t_keep * patches_per_t      # 各样本实际保留块数 (B,)
-        # pdb.set_trace()
-        # 2) 构建时序索引矩阵
-        arange = torch.arange(max_length, device=device)  # (0到max_length-1)
-        # 计算每个位置属于的时间块索引 (B, max_length)
+        tb, kb, ub = t // 4, k // 4, u // 4         # Block processing (assuming 4x4 blocks)
+        patches_per_t = kb * ub                     # Number of blocks per time block (B,)
+        t_keep = (tb * (1 - mask_ratio)).long()     # Number of time blocks to keep (B,)
+        L_keep_sample = t_keep * patches_per_t      # Actual number of blocks kept per sample (B,)
+        
+        # 2) Build temporal index matrix
+        arange = torch.arange(max_length, device=device)  # (0 to max_length-1)
+        # Calculate time block index for each position (B, max_length)
         time_idx = arange.unsqueeze(0) // patches_per_t.unsqueeze(1)
 
-        # 3) 生成保留掩码
-        keep_mask = time_idx < t_keep.unsqueeze(1)  # 前t_keep个时间块保留 (B, max_length)
-        mask = (~keep_mask).to(torch.float32)       # 转换为浮点掩码 (B, max_length)
+        # 3) Generate keep mask
+        keep_mask = time_idx < t_keep.unsqueeze(1)  # Keep first t_keep time blocks (B, max_length)
+        mask = (~keep_mask).to(torch.float32)       # Convert to float mask (B, max_length)
 
-        # 4) 准备索引恢复矩阵
+        # 4) Prepare index restore matrix
         ids_restore = arange.unsqueeze(0).expand(B, -1)  # (B, max_length)
 
-        # 5) 生成保留索引（考虑不同样本保留块数不同）
-        filler = torch.full_like(ids_restore, max_length)  # 超限填充值 (B, max_length)
-        ids_filled = torch.where(keep_mask, ids_restore, filler)  # 保留位置填原索引，其余填max_length
+        # 5) Generate keep indices (considering variable kept blocks per sample)
+        filler = torch.full_like(ids_restore, max_length)  # Out-of-bounds filler value (B, max_length)
+        ids_filled = torch.where(keep_mask, ids_restore, filler)  # Fill original indices for kept positions, fill max_length for others
         
-        # 计算最大保留块数（补齐不同样本长度差异）
+        # Calculate max kept blocks (padding for sample length differences)
         L_keep_max = L_keep_sample.max().long()
-        # 排序后将保留索引集中在前部 (B, max_length)
+        # Sort to concentrate kept indices at the front (B, max_length)
         ids_sorted, sort_indices = torch.sort(ids_filled, dim=1)
         ids_restore = torch.argsort(sort_indices, dim=1) 
 
-        ids_keep = ids_sorted[:, :L_keep_max]  # 截取最大保留块数 (B, L_keep_max)
+        ids_keep = ids_sorted[:, :L_keep_max]  # Truncate to max kept blocks (B, L_keep_max)
 
-        # 6) 安全索引处理（避免超限索引导致错误）
-        is_valid = ids_keep < max_length  # 标记有效索引 (B, L_keep_max)
-        ids_safe = torch.where(is_valid, ids_keep, torch.zeros_like(ids_keep))  # 超限位置置0
+        # 6) Safe index handling (avoid out-of-bounds errors)
+        is_valid = ids_keep < max_length  # Mark valid indices (B, L_keep_max)
+        ids_safe = torch.where(is_valid, ids_keep, torch.zeros_like(ids_keep))  # Set out-of-bounds positions to 0
 
-        # 7) 索引提取数据
-        idx = ids_safe.unsqueeze(-1).expand(-1, -1, D)  # 扩展至特征维度 (B, L_keep_max, D)
-        x_masked = torch.gather(x, dim=1, index=idx)    # 收集数据 (B, L_keep_max, D)
+        # 7) Extract data using indices
+        idx = ids_safe.unsqueeze(-1).expand(-1, -1, D)  # Expand to feature dimension (B, L_keep_max, D)
+        x_masked = torch.gather(x, dim=1, index=idx)    # Gather data (B, L_keep_max, D)
         
-        # 8) 将填充位置清零
-        zero_mask = is_valid.unsqueeze(-1).expand(-1, -1, D)  # 有效性掩码 (B, L_keep_max, D)
-        x_masked = x_masked * zero_mask.to(x_masked.dtype)    # 无效位置清零
+        # 8) Zero out padding positions
+        zero_mask = is_valid.unsqueeze(-1).expand(-1, -1, D)  # Validity mask (B, L_keep_max, D)
+        x_masked = x_masked * zero_mask.to(x_masked.dtype)    # Zero out invalid positions
 
         return x_masked, mask, ids_restore, ids_keep, is_valid
     
     def freq_masking(self, x, input_size, mask_ratio=0.5):
         """
-        向量化的频率掩码处理，修正版 - 正确保留低频部分
+        Vectorized frequency masking, revised version - correctly retains low-frequency parts
         """
         B, max_length, D = x.shape
         device = x.device
         
         t, k, u = input_size
-        # t, k, u = torch.unbind(input_size, dim=1)
         t = t.to(device)
         k = k.to(device)
         u = u.to(device)
-        # 计算块数量 (向量化处理)
-        tb = (t // 4).long()  # 时间块数
-        kb = (k // 4).long()  # 频率块数
-        ub = (u // 4).long()  # 空间块数
+        # Calculate block counts (vectorized processing)
+        tb = (t // 4).long()  # Time blocks
+        kb = (k // 4).long()  # Freq blocks
+        ub = (u // 4).long()  # Spatial blocks
         total_blocks = tb * kb * ub
         
-        # ===== 核心修正：向量化生成频率块索引 =====
-        # 创建全局索引 (0 到 max_length-1)
+        # ===== Core Revision: Vectorized generation of frequency block indices =====
+        # Create global indices (0 to max_length-1)
         global_idx = torch.arange(max_length, device=device).unsqueeze(0)  # (1, L)
         
-        # 计算每个位置的块坐标 (向量化坐标分解)
-        kf_tmp = global_idx // ub.unsqueeze(1)           # 中间值
-        k_idx = kf_tmp % kb.unsqueeze(1)                 # 频率块索引 (B, L)
+        # Calculate block coordinates for each position (vectorized coordinate decomposition)
+        kf_tmp = global_idx // ub.unsqueeze(1)           # Intermediate value
+        k_idx = kf_tmp % kb.unsqueeze(1)                 # Frequency block index (B, L)
         
-        # 标记有效位置 (实际存在的块)
+        # Mark valid positions (blocks that actually exist)
         valid_mask = global_idx < total_blocks.unsqueeze(1)  # (B, L)
         
-        # 计算需保留的频率块数 (确保至少保留1个块)
+        # Calculate number of frequency blocks to keep (ensure at least 1 is kept)
         k_keep = (kb * (1 - mask_ratio)).round().long()    # (B,)
         k_keep = torch.maximum(k_keep, torch.ones_like(k_keep))
         
-        # 构建保留掩码 (只保留低频块且位置有效)
+        # Build keep mask (retain only low-frequency blocks and valid positions)
         keep_mask = (k_idx < k_keep.unsqueeze(1)) & valid_mask  # (B, L)
-        mask = (~keep_mask).to(torch.float32)  # 转换为浮点掩码
+        mask = (~keep_mask).to(torch.float32)  # Convert to float mask
         
-        # 准备索引恢复矩阵
+        # Prepare index restore matrix
         ids_restore = torch.arange(max_length, device=device).unsqueeze(0).expand(B, -1)
         
-        # 生成保留索引（考虑不同样本保留块数不同）
-        filler = torch.full_like(ids_restore, max_length)  # 超限填充值
+        # Generate keep indices (considering variable kept blocks per sample)
+        filler = torch.full_like(ids_restore, max_length)  # Out-of-bounds filler value
         ids_filled = torch.where(keep_mask, ids_restore, filler)
         
-        # 计算最大保留块数（补齐样本长度差异）
-        L_keep_sample = (k_keep * tb * ub)  # 实际保留块数 (B,)
+        # Calculate max kept blocks (padding sample length differences)
+        L_keep_sample = (k_keep * tb * ub)  # Actual kept blocks (B,)
         L_keep_max = L_keep_sample.max().long()
         ids_sorted, sort_indices = torch.sort(ids_filled, dim=1)
         ids_restore = torch.argsort(sort_indices, dim=1) 
 
         ids_keep = ids_sorted[:, :L_keep_max]  # (B, L_keep_max)
         
-        # 安全索引处理
-        is_valid = ids_keep < max_length  # 标记有效索引
+        # Safe index handling
+        is_valid = ids_keep < max_length  # Mark valid indices
         ids_safe = torch.where(is_valid, ids_keep, torch.zeros_like(ids_keep))
         
-        # 索引提取数据
-        idx = ids_safe.unsqueeze(-1).expand(-1, -1, D)  # 扩展至特征维度
+        # Extract data using indices
+        idx = ids_safe.unsqueeze(-1).expand(-1, -1, D)  # Expand to feature dimension
         x_masked = torch.gather(x, dim=1, index=idx)     # (B, L_keep_max, D)
         
-        # 确保无效位置清零
+        # Ensure invalid positions are zeroed out
         zero_mask = is_valid.unsqueeze(-1).expand(-1, -1, D)
         x_masked = x_masked * zero_mask.to(x_masked.dtype)
         
-        # 额外处理：验证保留的低频块有效性
+        # Extra processing: Verify validity of retained low-frequency blocks
         actual_keep = (ids_keep < total_blocks.unsqueeze(1)) & is_valid
         if not torch.all(actual_keep == is_valid):
             print("Warning: Some preserved positions are invalid")
@@ -407,10 +375,6 @@ class MaskedAutoencoderCSI(nn.Module):
         return x_masked, mask, ids_restore, ids_keep, is_valid
 
     def forward_encoder(self, x, token_length, input_size, mask_ratio, mask_strategy='random', viz=False):
-        # 维度转换
-        # x = x[:, :-1, :, :]  # 切片处理数据维度
-        # x = torch.unsqueeze(x, dim=1)
-
         # embed patches
         pdb.set_trace()
         x = self.patch_embed(x)
@@ -420,7 +384,7 @@ class MaskedAutoencoderCSI(nn.Module):
             x, mask, ids_restore, ids_keep = self.random_masking(x, mask_ratio, token_length)
             ids = torch.arange(L, device=x.device).unsqueeze(0).expand(N, L) 
             pad_mask_full = ids < token_length.unsqueeze(1)  # [B, L]
-            # 利用 ids_keep 从 pad_mask_full 中抽出保留 token 的 padding 信息
+            # Use ids_keep to extract padding info for kept tokens from pad_mask_full
             attn_mask = torch.gather(
                 pad_mask_full, dim=1,
                 index=ids_keep
@@ -434,9 +398,6 @@ class MaskedAutoencoderCSI(nn.Module):
             x, mask, ids_restore, ids_keep, is_keep = self.freq_masking(x, input_size, mask_ratio)
             attn_mask = is_keep
     
-        # 先mask再加位置编码
-        # x, mask, ids_restore, ids_keep = self.random_masking(x, mask_ratio)
-        # pdb.set_trace()
         x = x.view(N, -1, C)
         # append cls token
         if self.cls_embed:
@@ -450,10 +411,10 @@ class MaskedAutoencoderCSI(nn.Module):
         else:
             cls_ind = 0
         pos_embed = self.pos_embed[:, cls_ind:, :].expand(x.shape[0], -1, -1)
-        # pdb.set_trace()
+        
         if mask_strategy == 'temporal' or mask_strategy == 'freq':
             pdb.set_trace()
-            is_valid = ids_keep < L # 标记有效索引 (B, L_keep_max)
+            is_valid = ids_keep < L # Mark valid indices (B, L_keep_max)
             ids_safe = torch.where(is_valid, ids_keep, torch.zeros_like(ids_keep)) 
             pos_embed = torch.gather(
                 pos_embed,
@@ -475,14 +436,14 @@ class MaskedAutoencoderCSI(nn.Module):
                 ],
                 1,
             )
-        # pdb.set_trace()
+        
         x = x.view([N, -1, C]) + pos_embed
         
         if self.cls_embed:
-            # 创建CLS Token专用mask（始终可见）
+            # Create specific mask for CLS Token (always visible)
             cls_mask = torch.ones((N, 1), dtype=attn_mask.dtype, device=attn_mask.device)
-            # 拼接到原始mask前
-            attn_mask = torch.cat([cls_mask, attn_mask], dim=1)  # 维度变为[N, L+1]
+            # Concatenate before the original mask
+            attn_mask = torch.cat([cls_mask, attn_mask], dim=1)  # Dimension becomes [N, L+1]
 
         # apply Transformer blocks
         for blk in self.blocks:
@@ -507,9 +468,7 @@ class MaskedAutoencoderCSI(nn.Module):
         x = self.decoder_embed(x)
         C = x.shape[-1]
 
-        # max_length = int(max(token_length).item())  # 获取最大长度
-        max_length = ids_restore.shape[1] # 获取最大长度
-        # print(x.shape[1])
+        max_length = ids_restore.shape[1] # Get max length
         # append mask tokens to sequence
         mask_tokens = self.mask_token.repeat(N, max_length - x.shape[1], 1)
         x_ = torch.cat([x[:, :, :], mask_tokens], dim=1)  # no cls token
@@ -523,7 +482,7 @@ class MaskedAutoencoderCSI(nn.Module):
         ids = torch.arange(max_length, device=x.device).unsqueeze(0).expand(N, max_length)  # [B, L]
         attn_mask = ids < token_length.unsqueeze(1)  
 
-        # 扩展掩码以适应CLS Token
+        # Expand mask to accommodate CLS Token
         if self.cls_embed:
             cls_mask = torch.ones((N, 1), dtype=attn_mask.dtype, device=attn_mask.device)
             attn_mask = torch.cat([cls_mask, attn_mask], dim=1)  # [N, L+1]
@@ -585,9 +544,7 @@ class MaskedAutoencoderCSI(nn.Module):
     def forward(self, imgs, token_length, input_size=None, mask_ratio=0.5, mask_strategy="freq"):
         latent, mask, ids_restore = self.forward_encoder(imgs, token_length, input_size, mask_ratio, mask_strategy)
         pred = self.forward_decoder(latent, ids_restore, token_length)
-        # loss = self.forward_loss(imgs, pred, mask)
         loss = self.forward_loss(imgs, pred, mask, token_length)
-        # loss = self.forward_loss_v2(imgs, pred, mask, token_length, input_size)
         return loss, pred, mask
 
 
@@ -637,4 +594,3 @@ if __name__ == '__main__':
     model = mae_vit_base_patch8_csi()
     output = model(input)
     print(output.shape)
-

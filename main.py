@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import uuid
 
 pdb.set_trace = lambda *args, **kwargs: None
 
@@ -136,7 +135,7 @@ def main(args):
 
     cudnn.benchmark = True
 
-    mmap_name = f"{args.mask_type}_{args.shuffle_type}_{len(args.dataset)}_{args.bucket_num}_12345"
+    mmap_name = f"{args.mask_type}_{args.shuffle_type}_{len(args.dataset)}_{args.bucket_num}"
     if args.distributed:
         if args.shuffle_type == 'global':
             dataset_train = CSIDataset_mmap_nopad(dataset=args.dataset, world_size=misc.get_world_size(),
@@ -169,41 +168,12 @@ def main(args):
             collate_fn=CSIDataset_mmap_nopad.padded_collate_fn,
             # prefetch_factor=8,
         )
-    # elif args.shuffle_type == 'bucket':
-    #     sampler_train = DistributedBoundarySampler(
-    #         dataset_bounds=dataset_train.dataset_bounds,
-    #         batch_size=args.batch_size,
-    #         world_size=num_tasks,
-    #         rank=global_rank,
-    #         shuffle=True,
-    #         drop_last=True,
-    #         seed=seed
-    #     )
-    #     data_loader_train = torch.utils.data.DataLoader(
-    #         dataset_train,
-    #         batch_sampler=sampler_train,
-    #     )
     elif args.shuffle_type == 'bucket':
         sampler_train = DistributedBucketBatchSampler_V2(
             dataset_bounds=dataset_train.dataset_bounds,
             batch_size=args.batch_size,
             accum_steps=args.accum_iter,
             num_buckets=args.bucket_num,
-            world_size=num_tasks,
-            rank=global_rank,
-            shuffle=True,
-            drop_last=True,
-            seed=seed
-        )
-        data_loader_train = torch.utils.data.DataLoader(
-            dataset_train,
-            batch_sampler=sampler_train,
-            collate_fn=CSIDataset_mmap_nopad.padded_collate_fn,
-        )
-    elif args.shuffle_type == 'group':
-        sampler_train = DistributedGroupBatchSampler(
-            dataset_bounds=dataset_train.dataset_bounds,
-            batch_size=args.batch_size,
             world_size=num_tasks,
             rank=global_rank,
             shuffle=True,

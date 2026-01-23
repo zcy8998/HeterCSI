@@ -2,12 +2,10 @@ import pdb
 import os
 import numpy as np
 import torch
-import math
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 os.environ['HF_ENDPOINT'] = 'https://alpha.hf-mirror.com'
-from transformers import GPT2ForSequenceClassification
 from transformers.models.gpt2.modeling_gpt2 import GPT2Model
 from einops import rearrange
 from models.baseline.embed import DataEmbedding

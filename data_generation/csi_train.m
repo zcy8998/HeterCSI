@@ -78,7 +78,7 @@ test_ratio = 0.1667;          % Test set ratio (approx 2000/12000)
 
 % Create output directory
 % NOTE: Paths have been made relative for open-source compatibility.
-output_dir = './data/csidata/motivation/test';
+output_dir = './data/csidata/train';
 if ~exist(output_dir, 'dir')
     mkdir(output_dir);
 end

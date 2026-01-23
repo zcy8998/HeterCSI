@@ -10,9 +10,6 @@ clc; clear; close all;
 
 rng(42);  % Set random seed to ensure reproducibility
 
-% -------------------------------------------------------------------------
-% Dataset Configuration (D1-D16)
-% -------------------------------------------------------------------------
 datasets = {
     % fc(GHz)  K    Δf(kHz)  T   Δt(ms)  UPA      Scenario                 SpeedRange(km/h)
     {1.5,      128, 90,      24, 1,      [1,4],   '3GPP_38.901_UMi_NLOS',   [3,50]};

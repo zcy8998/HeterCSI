@@ -1,14 +1,8 @@
-import pdb
-
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import weight_norm
 import math
-
-
-from util.config import Config
 
 
 class PositionalEmbedding(nn.Module):
@@ -408,131 +402,6 @@ class RotaryEmbedding(nn.Module):
         return x_.type_as(x)
 
     
-class FourierEmbedding(RotaryEmbedding):
-    # 谐波系数矩阵​​：使用可学习的矩阵 sin_coef 和 cos_coef 控制谐波分量的权重。初始化时采用Xavier正态分布，并叠加单位矩阵以保留主频分量。
-    def __init__(self, config, head_dim=128):
-        super().__init__(config)
-        
-        self.head_dim = self.config.d_model // self.config.n_heads
-        self.input_dim = self.inv_freq.size(-1)
-        self.output_dim = self.input_dim if self.input_dim <= self.head_dim//4 else self.head_dim//4
-
-        if self.prefix == "embed":
-            self.input_shape = "btD"
-            self.output_shape = "btd"
-        elif self.prefix == "attn":
-            self.input_shape = "bhtD"
-            self.output_shape = "bhtd"
-            
-        if self.prefix == "attn" and self.config.fourier_separate_head:
-            size = (self.config.n_heads, self.input_dim, self.output_dim)
-            self.coef_shape = "hDd"
-        else:
-            size = (self.input_dim, self.output_dim)
-            self.coef_shape = "Dd"
-        
-
-        device = get_device(config)
-        
-        self.sin_coef = nn.Parameter(
-            torch.randn(self.config.n_heads, self.input_dim, self.output_dim, device=device),
-            requires_grad=False
-        )
-        self.cos_coef = nn.Parameter(
-            torch.randn(self.config.n_heads, self.input_dim, self.output_dim, device=device),
-            requires_grad=False
-        )
-        # pdb.set_trace()
-        torch.nn.init.xavier_normal_(self.sin_coef, gain=self.config.rope_fourier_init_norm_gain)
-        torch.nn.init.xavier_normal_(self.cos_coef, gain=self.config.rope_fourier_init_norm_gain)
-        
-        # print(self.sin_coef.shape, self.input_dim)
-        if self.input_dim == self.output_dim:
-            self.sin_coef = self.sin_coef + torch.eye(self.input_dim, device=self.sin_coef.device)
-            self.cos_coef = self.cos_coef + torch.eye(self.input_dim, device=self.cos_coef.device)
-        else:
-            self.sin_coef = nn.Parameter(self.sin_coef + self.get_step_eye(self.sin_coef), requires_grad=False)
-            self.cos_coef = nn.Parameter(self.cos_coef + self.get_step_eye(self.cos_coef), requires_grad=False)
-    
-    # 该方法用于生成一个稀疏的、步进式的“伪单位矩阵”，主要用于将高维输入映射到低维输出，同时保留某些特定的输入位置。
-    def get_step_eye(self, _param):
-        _param = torch.zeros_like(_param)
-        
-        step = math.ceil(self.input_dim / self.output_dim)
-        for i in range(self.output_dim):
-            if i*step < self.input_dim:
-                _param[..., i*step, i] = 1.0
-        
-        return _param
-
-    def apply_rotary_pos_emb(self, pos_sin, pos_cos, t):
-        
-        # pdb.set_trace()
-        # (1, 8, 16, 16) 对每个位置编码维度D进行d种线性组合，生成新的频率特征
-        coef_sin = self.sin_coef / self.sin_coef.sum(dim=-2, keepdim=True)
-        coef_sin = coef_sin.to(dtype=pos_sin.dtype)
-
-        coef_cos = self.cos_coef / self.cos_coef.sum(dim=-2, keepdim=True)
-        coef_cos = coef_cos.to(dtype=pos_cos.dtype)
-
-        # 现在执行 einsum 计算（类型已一致）
-        fourier_sin = torch.einsum("bhtD, hDd -> bhtd", pos_sin, coef_sin)
-        fourier_cos = torch.einsum("bhtD, hDd -> bhtd", pos_cos, coef_cos)
-        
-        fourier_sin = F.pad(input=fourier_sin, pad=(0, self.head_dim//2-fourier_sin.size(-1)), mode="constant", value=1)
-        fourier_cos = F.pad(input=fourier_cos, pad=(0, self.head_dim//2-fourier_cos.size(-1)), mode="constant", value=1)
-        
-        fourier_sin = torch.cat((fourier_sin, fourier_sin), dim=-1)
-        fourier_cos = torch.cat((fourier_cos, fourier_cos), dim=-1)
-        
-        # print(f"t shape {t.shape}")
-        # print(f"fourier_sin shape {fourier_sin.shape}, fourier_cos shape {fourier_cos.shape}")
-        return ((t * fourier_cos) - (self.rotate_half(t) * fourier_sin)).to(t.dtype)
-    
-
 def get_device(pe_config):
     if pe_config.device is not None:
         return pe_config.device
-
-
-# 测试用例
-if __name__ == "__main__":
-
-    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-    
-    # 配置参数
-    config = Config(
-        d_model=256,
-        n_heads=8,
-        fope=False,
-        device=device
-    )
-
-    # 测试数据
-    batch_size = 2
-    seq_len = 16
-    x = torch.randn(batch_size, config.n_heads, seq_len, config.d_model//config.n_heads)
-    x = x.to(device)
-    print('x.shape', x.shape)
-    
-    # 测试Rotary
-    rotary = RotaryEmbedding(config)
-    out_rotary = rotary(x, seq_len)
-    print(f"Rotary Output Shape: {out_rotary.shape}")  # 应保持原形状
-    
-    # 测试Fourier
-    config.fope = True
-    fourier = FourierEmbedding(config)
-    out_fourier = fourier(x, seq_len)
-    print(f"Fourier Output Shape: {out_fourier.shape}")
-    
-    # 验证数值有效性
-    # assert not torch.isnan(out_rotary).any(), "Rotary输出包含非法值"
-    assert not torch.isnan(out_fourier).any(), "Fourier输出包含非法值"
-    
-    # 验证特征保留
-    # input_norm = torch.norm(x, dim=-1)
-    # rotary_norm = torch.norm(out_rotary, dim=-1)
-    # assert torch.allclose(input_norm, rotary_norm, atol=1e-5), "Rotary未保持范数"
-    
-    print("所有测试通过！")
