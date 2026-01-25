@@ -26,7 +26,6 @@ from torch.utils.tensorboard import SummaryWriter
 # from torchao.quantization.linear_activation_quantized_tensor import \
 #     LinearActivationQuantizedTensor
 
-import models.heter_csi_moe as heter_csi_moe
 import models.heter_csi as heter_csi
 import timm_utils.optim.optim_factory as optim_factory
 import util.misc as misc
