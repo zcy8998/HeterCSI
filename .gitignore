@@ -13,7 +13,6 @@ __pycache__/
 train_data/
 test_data/
 *.csv
-*.jpg
 *.png
 *.mp4
 *.gif

@@ -3,7 +3,10 @@
 </div>
 
 ## Abstract
-Wireless foundation models promise transformative capabilities for channel state information (CSI) processing across diverse 6G network applications, yet face fundamental challenges due to the inherent dual heterogeneity of CSI across both scale and scenario dimensions. However, current pretraining approaches either constrain inputs to fixed dimensions or isolate training by scale, limiting the generalization and scalability of wireless foundation models. In this paper, we propose \textbf{HeterCSI}, a channel-adaptive pretraining framework that reconciles training efficiency with robust cross-scenario generalization via  a new understanding of gradient dynamics in heterogeneous CSI pretraining. Our key insight reveals that CSI scale heterogeneity primarily causes destructive gradient interference, while scenario diversity actually promotes constructive gradient alignment when properly managed. Specifically, we formulate heterogeneous CSI batch construction as a partitioning optimization problem that minimizes zero-padding overhead while preserving scenario diversity. To solve this, we develop a scale-aware adaptive batching strategy that aligns CSI samples of similar  scales, and design a double-masking mechanism to isolate valid signals from padding artifacts. Extensive experiments on 12 unseen scenarios demonstrate that HeterCSI establishes a generalized foundation model without scenario-specific finetuning. It reduces the average normalized mean squared error (NMSE) by 2.13 dB, 4.02 dB, and 5.65 dB for reconstruction, time-domain prediction, and frequency-domain prediction, respectively. The proposed method also reduces training latency by 53\% compared to exisiting approaches while improving generalization performance by 1.53 dB on average.
+Wireless foundation models promise transformative capabilities for channel state information (CSI) processing across diverse 6G network applications, yet face fundamental challenges due to the inherent dual heterogeneity of CSI across both scale and scenario dimensions. However, current pretraining approaches either constrain inputs to fixed dimensions or isolate training by scale, limiting the generalization and scalability of wireless foundation models. In this paper, we propose \textbf{HeterCSI}, a channel-adaptive pretraining framework that reconciles training efficiency with robust cross-scenario generalization via  a new understanding of gradient dynamics in heterogeneous CSI pretraining. Our key insight reveals that CSI scale heterogeneity primarily causes destructive gradient interference, while scenario diversity actually promotes constructive gradient alignment when properly managed. Specifically, we formulate heterogeneous CSI batch construction as a partitioning optimization problem that minimizes zero-padding overhead while preserving scenario diversity. To solve this, we develop a scale-aware adaptive batching strategy that aligns CSI samples of similar  scales, and design a double-masking mechanism to isolate valid signals from padding artifacts. Extensive experiments on 12 datasets demonstrate that HeterCSI establishes a generalized foundation model without scenario-specific finetuning, achieving superior average performance over full-shot baselines. Compared to the state-of-the-art zero-shot benchmark WiFo, it reduces NMSE by 7.19 dB, 4.08 dB, and 5.27 dB for CSI reconstruction, time-domain, and frequency-domain prediction, respectively.  The proposed HeterCSI framework also reduces training latency by 53\% compared to existing approaches while improving generalization performance by 1.53 dB on average.
+
+## Overview
+![alt text](./framework.jpg)
 
 ## Preparation
 - Python 3.10 (Recommend to use [Anaconda](https://www.anaconda.com/))
@@ -13,11 +16,13 @@ pip install -r requirements.txt
 ```
 
 ### Pretrain Dataset
-https://huggingface.co/datasets/Chenyu8998/HeterCSI/tree/main/train
+https://huggingface.co/datasets/Chenyu8998/HeterCSI/train
 
 ### Zeroshot Dataset
-https://huggingface.co/datasets/Chenyu8998/HeterCSI/tree/main/zeroshot
+https://huggingface.co/datasets/Chenyu8998/HeterCSI/zeroshot
 
+## Get Started
+We have released the pre-trained weights for inference in [[Model](https://huggingface.co/Chenyu8998/HeterCSI)].
 
 ### Pretraining
 ```shell
