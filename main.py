@@ -132,7 +132,7 @@ def main(args):
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-
+ 
     cudnn.benchmark = True
 
     mmap_name = f"{args.mask_type}_{args.shuffle_type}_{len(args.dataset)}_{args.bucket_num}"
