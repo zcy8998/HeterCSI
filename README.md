@@ -58,3 +58,14 @@ python -u test.py \
 --output_dir /home/zhangchenyu/experiments/cross_csi/test_high \
 --log_dir /home/zhangchenyu/experiments/cross_csi/test_high
 ```
+
+## Citation
+If you found our project helpful, please kindly cite our paper:
+```
+@article{zhang2026hetercsi,
+      title={HeterCSI: Channel-Adaptive Heterogeneous CSI Pretraining Framework for Generalized Wireless Foundation Models}, 
+      author={Chenyu Zhang and Xinchen Lyu and Chenshan Ren and Shuhan Liu and Qimei Cui and Xiaofeng Tao},
+      year={2026},
+      journal={arXiv preprint arXiv:2601.18200},
+}
+```
